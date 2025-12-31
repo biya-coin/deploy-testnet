@@ -25,9 +25,10 @@ CHAIN_BINARY="injectived"
 
 # 脚本目录
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ANSIBLE_DIR="$(dirname "$SCRIPT_DIR")"
+# Ansible 目录
+ANSIBLE_DIR="$SCRIPT_DIR/ansible"
 # 输出目录
-BASE_DIR="$ANSIBLE_DIR/chain-deploy-config"
+BASE_DIR="$SCRIPT_DIR/chain-deploy-config"
 
 # 验证者节点配置 - 从 inventory.yml 读取
 declare -A VALIDATORS=()

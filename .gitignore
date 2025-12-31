@@ -3,6 +3,5 @@
 .DS_Store
 
 build/
-chain-stresser-deploy/
-ansible/chain-deploy-config/
+chain-deploy-config/
 **/.env
