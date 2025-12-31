@@ -227,14 +227,5 @@ main() {
     apply_node_configs
 
 }
-# 记录开始时间（毫秒）
-start_time=$(date +%s%3N)
 
-# 运行主流程
 main
-
-# 记录结束时间并计算耗时
-end_time=$(date +%s%3N)
-elapsed_time=$((end_time - start_time))
-elapsed_seconds=$(awk "BEGIN {printf \"%.2f\", $elapsed_time/1000}")
-echo "总耗时: ${elapsed_time} ms (${elapsed_seconds}s)"
