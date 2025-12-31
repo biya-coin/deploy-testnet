@@ -18,8 +18,8 @@ RPC_URL="https://ethereum-sepolia.publicnode.com"
 # Sepolia Chain ID
 CHAIN_ID="11155111"
 
-# peggo_evm_key.json 文件目录
-PEGGO_KEYS_DIR="../../ansible/chain-stresser-deploy/validators"
+# peggo_evm_key.json
+PEGGO_KEYS_DIR="../../chain-deploy-config"
 # ================================================
 
 # 解析命令行参数
@@ -100,9 +100,10 @@ echo ""
 TARGET_ADDRESSES=()
 VALIDATOR_INDICES=()
 
-for validator_dir in "$PEGGO_KEYS_DIR"/*/; do
+for validator_dir in "$PEGGO_KEYS_DIR"/validator-*/; do
     if [ -d "$validator_dir" ]; then
-        peggo_key_file="${validator_dir}config/peggo_evm_key.json"
+        # peggo_evm_key.json 在节点根目录
+        peggo_key_file="${validator_dir}peggo_evm_key.json"
         
         if [ -f "$peggo_key_file" ]; then
             # 提取 validator 索引

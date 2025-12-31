@@ -2,7 +2,7 @@
 # 在本地生成 Peggo .env 文件，然后上传到远程服务器
 - name: 读取本地 peggo_evm_key.json
   slurp:
-    src: "{{ local_config_dir }}/validator-{{ node_index }}/config/peggo_evm_key.json"
+    src: "{{ local_config_dir }}/validator-{{ node_index }}/peggo_evm_key.json"
   register: peggo_evm_key_content
   delegate_to: localhost
 

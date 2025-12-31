@@ -7,7 +7,7 @@
   gather_facts: no
   
   vars:
-    local_config_dir: "{{ playbook_dir | dirname }}/chain-deploy-config"
+    local_config_dir: "{{ playbook_dir }}/../../chain-deploy-config"
     peggo_home: "/home/{{ deploy_user }}/.peggo"
   
   tasks:

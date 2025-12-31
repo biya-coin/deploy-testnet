@@ -63,6 +63,11 @@ app_state:
     auction_exchange_transfer_denom_decimals:
       - denom: "inj"
         decimals: 18
+  
+  # Peggy 跨链桥模块
+  peggy:
+    params:
+      peggy_id: "biyachain-peggyid"  # Peggy ID，必须与 inventory.yml 一致
 
 # Consensus 共识参数
 consensus:

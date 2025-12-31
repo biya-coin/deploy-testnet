@@ -7,7 +7,7 @@
 
 - name: 读取 peggo_evm_key.json
   slurp:
-    src: "{{ validator_home }}/config/peggo_evm_key.json"
+    src: "{{ validator_home }}/peggo_evm_key.json"
   register: peggo_evm_key
   failed_when: false
 
@@ -22,7 +22,7 @@
 
 - name: 获取 validator 账户地址
   shell: |
-    {{ binary_dir }}/biyachaind keys show validator \
+    {{ binary_dir }}/biyachaind keys show {{ validator_index }} \
       --keyring-backend=test \
       --home "{{ validator_home }}" \
       --output json | jq -r '.address'
@@ -58,7 +58,7 @@
       "{{ validator_address }}" \
       "{{ orchestrator_cosmos_address }}" \
       "{{ orchestrator_evm_address }}" \
-      --from validator \
+      --from {{ validator_index }} \
       --chain-id="{{ chain_id }}" \
       --keyring-backend=test \
       --home "{{ validator_home }}" \

@@ -7,8 +7,8 @@
   gather_facts: no
   
   vars:
-    local_config_dir: "{{ playbook_dir | dirname }}/chain-deploy-config"
-    binary_dir: "{{ playbook_dir | dirname }}/build/bin"
+    local_config_dir: "{{ playbook_dir }}/../../chain-deploy-config"
+    binary_dir: "{{ playbook_dir }}/../../build/bin"
     chain_id: "{{ peggo_cosmos_chain_id | default('biyachain-888') }}"
     gas_prices: "1600000000inj"
   

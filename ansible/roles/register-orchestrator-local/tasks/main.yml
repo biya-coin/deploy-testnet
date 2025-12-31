@@ -2,9 +2,10 @@
 # 本地注册 Orchestrator 的 main task
 - name: 获取所有 validator 目录
   find:
-    paths: "{{ local_config_dir }}/validators"
+    paths: "{{ local_config_dir }}"
     file_type: directory
     recurse: no
+    patterns: "validator-*"
   register: validator_dirs
   delegate_to: localhost
 

@@ -43,11 +43,11 @@
 
 - name: 从所有 validator 的 peggo_evm_key.json 读取 EVM 地址（重新读取，因为 role 之间变量不共享）
   shell: |
-    # 读取所有 validator 的 EVM 地址（从 peggo_evm_key.json）
+    # 读取所有 validator 的 EVM 地址（从节点根目录的 peggo_evm_key.json）
     addresses=""
     powers=""
     for validator_dir in {{ local_config_dir }}/validator-*/; do
-      peggo_evm_key_file="${validator_dir}config/peggo_evm_key.json"
+      peggo_evm_key_file="${validator_dir}peggo_evm_key.json"
       if [ -f "$peggo_evm_key_file" ]; then
         evm_addr=$(jq -r '.evm_address' "$peggo_evm_key_file" 2>/dev/null || echo "")
         if [ -n "$evm_addr" ] && [ "$evm_addr" != "null" ]; then
@@ -71,10 +71,10 @@
 - name: 读取第一个 validator 的 Cosmos 地址（从 keyring 或 genesis.json）
   shell: |
     validator_dir="{{ local_config_dir }}/validator-0"
-    # 首先尝试从 keyring 读取
-    if [ -d "${validator_dir}/keyring-test" ] || [ -d "${validator_dir}/keyring-file" ]; then
-      # 尝试从 keyring 读取
-      cosmos_addr=$(biyachaind keys show validator --keyring-backend test --home "$validator_dir" 2>/dev/null | grep -E "^  address:" | awk '{print $2}' || echo "")
+    # 首先尝试从 keyring 读取（使用 test 模式，无需密码）
+    if [ -d "${validator_dir}/keyring-test" ]; then
+      # 尝试从 keyring 读取（key 名称是 validator-0）
+      cosmos_addr=$(biyachaind keys show validator-0 --keyring-backend test --home "$validator_dir" -a 2>/dev/null || echo "")
       if [ -n "$cosmos_addr" ]; then
         echo "$cosmos_addr"
         exit 0
@@ -100,7 +100,7 @@
 
 - name: 读取第一个 validator 的 EVM 地址（从 peggo_evm_key.json）
   shell: |
-    peggo_evm_key_file="{{ local_config_dir }}/validator-0/config/peggo_evm_key.json"
+    peggo_evm_key_file="{{ local_config_dir }}/validator-0/peggo_evm_key.json"
     if [ -f "$peggo_evm_key_file" ]; then
       evm_addr=$(jq -r '.evm_address' "$peggo_evm_key_file" 2>/dev/null || echo "")
       if [ -n "$evm_addr" ] && [ "$evm_addr" != "null" ]; then
@@ -593,7 +593,7 @@
       shell: |
         # 从所有 validator 的 keyring 读取 cosmos 地址，然后转换为 valoper 地址
         valopers=""
-        binary_path="{{ playbook_dir | dirname }}/build/bin/biyachaind"
+        binary_path="{{ playbook_dir }}/../../build/bin/biyachaind"
         
         # 确保按索引顺序处理（0, 1, 2, 3）
         for i in $(seq 0 10); do
@@ -603,9 +603,9 @@
           fi
           
           cosmos_addr=""
-          # 从 keyring 读取（优先方法）
+          # 从 keyring 读取（使用 test 模式，无需密码）
           if [ -d "${validator_dir}/keyring-test" ]; then
-            cosmos_addr=$("$binary_path" keys show validator --keyring-backend test --home "$validator_dir" -a 2>/dev/null || echo "")
+            cosmos_addr=$("$binary_path" keys show validator-$i --keyring-backend test --home "$validator_dir" -a 2>/dev/null || echo "")
           fi
           
           # 如果 keyring 读取失败，从 genesis.json 读取

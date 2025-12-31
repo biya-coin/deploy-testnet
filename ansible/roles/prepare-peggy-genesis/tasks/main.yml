@@ -55,11 +55,11 @@
 
 - name: 从所有 validator 的 peggo_evm_key.json 读取 EVM 地址
   shell: |
-    # 读取所有 validator 的 EVM 地址（从 peggo_evm_key.json）
+    # 读取所有 validator 的 EVM 地址（从节点根目录的 peggo_evm_key.json）
     addresses=""
     powers=""
     for validator_dir in {{ local_config_dir }}/validator-*/; do
-      peggo_evm_key_file="${validator_dir}config/peggo_evm_key.json"
+      peggo_evm_key_file="${validator_dir}peggo_evm_key.json"
       if [ -f "$peggo_evm_key_file" ]; then
         evm_addr=$(jq -r '.evm_address' "$peggo_evm_key_file" 2>/dev/null || echo "")
         if [ -n "$evm_addr" ] && [ "$evm_addr" != "null" ]; then
@@ -83,10 +83,10 @@
 - name: 读取第一个 validator 的 Cosmos 地址（从 keyring 或 genesis.json）
   shell: |
     validator_dir="{{ local_config_dir }}/validator-0"
-    # 首先尝试从 keyring 读取
-    if [ -d "${validator_dir}/keyring-test" ] || [ -d "${validator_dir}/keyring-file" ]; then
-      # 尝试从 keyring 读取
-      cosmos_addr=$(biyachaind keys show validator --keyring-backend test --home "$validator_dir" 2>/dev/null | grep -E "^  address:" | awk '{print $2}' || echo "")
+    # 首先尝试从 keyring 读取（使用 test 模式，无需密码）
+    if [ -d "${validator_dir}/keyring-test" ]; then
+      # 尝试从 keyring 读取（key 名称是 validator-0）
+      cosmos_addr=$(biyachaind keys show validator-0 --keyring-backend test --home "$validator_dir" -a 2>/dev/null || echo "")
       if [ -n "$cosmos_addr" ]; then
         echo "$cosmos_addr"
         exit 0
@@ -112,7 +112,7 @@
 
 - name: 读取第一个 validator 的 EVM 地址（从 peggo_evm_key.json）
   shell: |
-    peggo_evm_key_file="{{ local_config_dir }}/validator-0/config/peggo_evm_key.json"
+    peggo_evm_key_file="{{ local_config_dir }}/validator-0/peggo_evm_key.json"
     if [ -f "$peggo_evm_key_file" ]; then
       evm_addr=$(jq -r '.evm_address' "$peggo_evm_key_file" 2>/dev/null || echo "")
       if [ -n "$evm_addr" ] && [ "$evm_addr" != "null" ]; then
@@ -147,7 +147,7 @@
       
       请检查：
       - 配置文件是否正确生成（chain-stresser generate）
-      - peggo_evm_key.json 文件是否存在于 {{ local_config_dir }}/validator-*/config/
+      - peggo_evm_key.json 文件是否存在于 {{ local_config_dir }}/validator-*/
       - peggo_evm_key.json 中是否包含 evm_address 字段
       - validator keyring 或 genesis.json 中是否有 validator cosmos 地址
       

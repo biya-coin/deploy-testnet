@@ -5,7 +5,8 @@ set -e
 # 解析参数
 LIMIT_HOST=""       # 默认部署所有节点
 CLEAN_DATA=true     # 默认清空数据（完全重新部署）
-NODES_ONLY=false    # 默认执行完整流程（节点 + Peggo + 注册）
+NODES_ONLY=false    # 仅部署节点
+PEGGO_ONLY=false    # 仅部署跨链桥
 REGISTER_ONLY=false # 仅执行注册（跳过部署）
 
 while [[ $# -gt 0 ]]; do
@@ -18,7 +19,16 @@ while [[ $# -gt 0 ]]; do
             CLEAN_DATA=false
             shift
             ;;
+        --node)
+            NODES_ONLY=true
+            shift
+            ;;
+        --peggo)
+            PEGGO_ONLY=true
+            shift
+            ;;
         --nodes-only)
+            # 保留旧参数兼容性
             NODES_ONLY=true
             shift
             ;;
@@ -32,11 +42,19 @@ while [[ $# -gt 0 ]]; do
             echo "选项:"
             echo "  --host <节点名>    部署指定节点（如 validator-0, sentry-0）"
             echo "                     指定此选项时，仅部署该节点，不执行 Peggo 和注册"
-            echo "  --nodes-only       仅部署所有节点，不部署 Peggo 和注册"
+            echo "  --node             仅部署节点服务，不部署 Peggo 和注册"
+            echo "  --peggo            仅部署 Peggo 跨链桥，不部署节点（需要节点已运行）"
             echo "  --register-only    仅执行 orchestrator 注册（跳过节点和 Peggo 部署）"
             echo "  --no-clean         不清空数据（仅更新二进制和配置）"
             echo "                     默认会清空 /data/biyachain 完全重新部署"
             echo "  --help             显示帮助信息"
+            echo ""
+            echo "示例:"
+            echo "  $0                      完整部署流程（节点 → 注册 → Peggo）"
+            echo "  $0 --node               仅部署所有节点"
+            echo "  $0 --peggo              仅部署 Peggo 跨链桥"
+            echo "  $0 --host validator-0   仅部署 validator-0 节点"
+            echo "  $0 --register-only      仅注册 orchestrator"
             echo ""
             echo "⚠️  注意："
             echo "  默认模式会删除 /data/biyachain 目录（包括数据和配置）"
@@ -123,6 +141,8 @@ fi
 # 判断部署范围
 if [ "$REGISTER_ONLY" == true ]; then
     echo "部署范围: 仅注册 Orchestrator（跳过节点和 Peggo 部署）"
+elif [ "$PEGGO_ONLY" == true ]; then
+    echo "部署范围: 仅部署 Peggo 跨链桥（跳过节点部署和注册）"
 elif [ -n "$LIMIT_HOST" ]; then
     echo "部署范围: 仅 $LIMIT_HOST（不包含 Peggo 和注册）"
 elif [ "$NODES_ONLY" == true ]; then
@@ -240,12 +260,12 @@ fi
 echo "=========================================="
 echo ""
 
-# 获取主机列表（按 validator 优先，然后按索引排序）
+# 初始化主机列表（所有模式都需要）
 if [ -n "$LIMIT_HOST" ]; then
     # 如果指定了主机，只部署该主机
     HOSTS="$LIMIT_HOST"
 else
-    # 否则部署所有主机
+    # 否则获取所有主机
     HOSTS=$(python3 -c "
 import sys
 try:
@@ -269,44 +289,27 @@ except:
     fi
 fi
 
-echo "开始节点部署流程..."
-echo ""
+# 提取 validator 主机列表（用于注册和 Peggo 部署）
+VALIDATOR_HOSTS=$(echo "$HOSTS" | tr ' ' '\n' | grep "^validator-" || true)
 
-# 如果是仅注册模式，直接跳到注册阶段
+# 如果是仅注册模式或仅 Peggo 模式，设置跳转标志
 if [ "$REGISTER_ONLY" == true ]; then
     echo "跳过节点和 Peggo 部署，直接执行注册..."
     echo ""
-    # 跳转到注册阶段
-    # 设置 HOSTS 变量（用于后续可能的清理）
-    HOSTS=$(python3 -c "
-import sys
-try:
-    import yaml
-    with open('inventory.yml') as f:
-        inv = yaml.safe_load(f)
-    hosts = []
-    for group in ['validators']:
-        if group in inv.get('all', {}).get('children', {}):
-            hosts_dict = inv['all']['children'][group].get('hosts', {})
-            hosts.extend(hosts_dict.keys())
-    if hosts:
-        hosts.sort(key=lambda x: int(x.split('-')[1]))
-        print(' '.join(hosts))
-except:
-    pass
-" 2>/dev/null)
-    
-    VALIDATOR_HOSTS=$(echo "$HOSTS" | tr ' ' '\n' | grep "^validator-" || true)
-    
-    # 直接跳到注册阶段
-    # 使用 goto 模拟（通过变量控制）
     SKIP_TO_REGISTER=true
+    SKIP_TO_PEGGO=false
+elif [ "$PEGGO_ONLY" == true ]; then
+    echo "跳过节点部署和注册，直接部署 Peggo..."
+    echo ""
+    SKIP_TO_REGISTER=false
+    SKIP_TO_PEGGO=true
 else
     SKIP_TO_REGISTER=false
+    SKIP_TO_PEGGO=false
 fi
 
-# 如果需要清空数据，先执行清空操作
-if [ "$CLEAN_DATA" == true ] && [ "$SKIP_TO_REGISTER" == false ]; then
+# 如果需要清空数据，先执行清空操作（仅 Peggo 模式不需要清空）
+if [ "$CLEAN_DATA" == true ] && [ "$SKIP_TO_REGISTER" == false ] && [ "$SKIP_TO_PEGGO" == false ]; then
     echo "=========================================="
     echo "步骤 1/2: 清空节点数据"
     echo "=========================================="
@@ -399,7 +402,7 @@ fi
 # ==========================================
 # 阶段 1: 部署所有节点（不部署 Peggo）
 # ==========================================
-if [ "$SKIP_TO_REGISTER" == false ]; then
+if [ "$SKIP_TO_REGISTER" == false ] && [ "$SKIP_TO_PEGGO" == false ]; then
     echo "=========================================="
     if [ "$CLEAN_DATA" == true ]; then
         echo "阶段 1/4: 部署所有节点"
@@ -523,7 +526,7 @@ done
     echo "✓ 阶段 1 完成：所有节点部署完成"
     echo "=========================================="
     echo ""
-fi  # 结束 SKIP_TO_REGISTER == false
+fi  # 结束 SKIP_TO_REGISTER == false && SKIP_TO_PEGGO == false
 
 # 如果指定了 --host 或 --nodes-only，则到此结束
 if [ -n "$LIMIT_HOST" ] || [ "$NODES_ONLY" == true ]; then
@@ -539,7 +542,7 @@ fi
 # ==========================================
 # 阶段 2: 注册 Orchestrator 地址
 # ==========================================
-if [ "$SKIP_TO_REGISTER" == false ]; then
+if [ "$SKIP_TO_REGISTER" == false ] && [ "$SKIP_TO_PEGGO" == false ]; then
     echo "=========================================="
     echo "阶段 2/4: 准备注册 Orchestrator"
     echo "=========================================="
@@ -553,7 +556,7 @@ if [ "$SKIP_TO_REGISTER" == false ]; then
     
     # 检查节点是否正常出块
     echo "检查节点状态..."
-    FIRST_VALIDATOR=$(echo "$HOSTS" | tr ' ' '\n' | grep "^validator-" | head -n1)
+    FIRST_VALIDATOR=$(echo "$VALIDATOR_HOSTS" | tr ' ' '\n' | head -n1)
     if [ -n "$FIRST_VALIDATOR" ]; then
         FIRST_IP=$(grep -A 3 "^[[:space:]]*${FIRST_VALIDATOR}:" inventory.yml | grep "ansible_host:" | awk '{print $2}' | tr -d '"' || echo "")
         if [ -n "$FIRST_IP" ]; then
@@ -571,7 +574,7 @@ if [ "$SKIP_TO_REGISTER" == false ]; then
         fi
     fi
     echo ""
-fi  # 结束 SKIP_TO_REGISTER == false
+fi  # 结束 SKIP_TO_REGISTER == false && SKIP_TO_PEGGO == false
 
 if [ "$REGISTER_ONLY" == true ]; then
     echo "=========================================="
@@ -587,8 +590,8 @@ fi
 echo "说明: 使用本地 keyring 和配置文件注册 orchestrator 地址"
 echo "      不依赖远程服务器上的私钥文件"
 
-# 获取第一个可用节点的 RPC
-FIRST_VALIDATOR=$(echo "$HOSTS" | tr ' ' '\n' | grep "^validator-" | head -n1)
+# 获取第一个可用节点的 RPC（从 VALIDATOR_HOSTS）
+FIRST_VALIDATOR=$(echo "$VALIDATOR_HOSTS" | tr ' ' '\n' | head -n1)
 if [ -z "$FIRST_VALIDATOR" ]; then
     echo "错误: 未找到 validator 节点"
     exit 1
@@ -622,19 +625,34 @@ else
     exit 1
 fi
 
+# 如果是仅注册模式，到此结束
+if [ "$REGISTER_ONLY" == true ]; then
+    echo "部署完成！（仅执行了注册）"
+    exit 0
+fi
+
 # ==========================================
 # 阶段 3: 部署所有 Peggo
 # ==========================================
 if [ "$SKIP_TO_REGISTER" == false ]; then
-    echo "=========================================="
-    echo "阶段 3/4: 部署所有 Peggo Orchestrator"
-    echo "=========================================="
+    if [ "$PEGGO_ONLY" == true ]; then
+        echo "=========================================="
+        echo "部署 Peggo Orchestrator"
+        echo "=========================================="
+    else
+        echo "=========================================="
+        echo "阶段 3/4: 部署所有 Peggo Orchestrator"
+        echo "=========================================="
+    fi
     echo ""
-    echo "提示: Orchestrator 已注册，Peggo 将以 Validator 模式启动"
-    echo ""
+    
+    if [ "$PEGGO_ONLY" == false ]; then
+        echo "提示: Orchestrator 已注册，Peggo 将以 Validator 模式启动"
+        echo ""
+    fi
 
-    # 仅部署 validator 节点的 Peggo
-    VALIDATOR_HOSTS=$(echo "$HOSTS" | tr ' ' '\n' | grep "^validator-" || true)
+    # 仅部署 validator 节点的 Peggo（不需要 sentry）
+    # VALIDATOR_HOSTS 已在前面初始化
     
     # 步骤 1: 生成并上传所有 .env 文件
     echo "步骤 1: 生成并上传 Peggo .env 文件..."
@@ -692,16 +710,30 @@ for host in $VALIDATOR_HOSTS; do
     echo "✓ $host Peggo 部署完成"
 done
     echo ""
-    echo "=========================================="
-    echo "✓ 阶段 3 完成：所有 Peggo 部署完成"
-    echo "=========================================="
+    
+    if [ "$PEGGO_ONLY" == true ]; then
+        echo "=========================================="
+        echo "✓ Peggo 部署完成"
+        echo "=========================================="
+    else
+        echo "=========================================="
+        echo "✓ 阶段 3 完成：所有 Peggo 部署完成"
+        echo "=========================================="
+    fi
     echo ""
 fi  # 结束 SKIP_TO_REGISTER == false
+
+# 如果是仅 Peggo 模式，到此结束（不清理私钥）
+if [ "$PEGGO_ONLY" == true ]; then
+    echo "部署完成！（仅部署了 Peggo）"
+    exit 0
+fi
 
 # ==========================================
 # 阶段 4: 清理私钥文件
 # ==========================================
 if [ "$REGISTER_ONLY" == true ]; then
+    # 这个分支永远不会执行到（上面已经 exit）
     echo "=========================================="
     echo "清理私钥文件"
     echo "=========================================="
@@ -736,15 +768,8 @@ for host in $HOSTS; do
     fi
 done
 
-echo "✓ 远程服务器敏感文件已清理"
-echo "  - 已删除: node_key.json, priv_validator_key.json"
-echo "  - 已删除: .peggo/.env (validator 节点)"
-echo ""
-echo "注意: 本地 keyring 和 peggo_evm_key.json 仍保留在 $CONFIG_DIR_ABS"
-echo ""
-
 echo "=========================================="
-echo "✓ 阶段 4 完成：私钥文件已清理"
+echo "✓ 私钥文件已清理"
 echo "=========================================="
 
 echo "=========================================="
