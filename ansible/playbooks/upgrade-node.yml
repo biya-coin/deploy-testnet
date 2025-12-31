@@ -1,0 +1,135 @@
+---
+# ==========================================
+# Playbook: 节点升级（Cosmovisor）
+# ==========================================
+# 功能：
+#   1. 下载升级二进制文件（localhost）
+#   2. 重命名 injectived -> biyachaind
+#   3. 部署到所有节点
+# ==========================================
+
+- name: 下载并准备升级二进制文件
+  hosts: localhost
+  gather_facts: no
+  
+  vars:
+    # 从命令行传入的变量
+    # upgrade_name: 升级名称（如 v1.17.2）
+    # download_url: 下载 URL
+    # checksum: SHA256 校验和（可选）
+    # wasmvm_version: WASM 库版本
+    # build_output_dir: 输出目录
+    
+  tasks:
+    - name: 创建输出目录
+      file:
+        path: "{{ build_output_dir }}"
+        state: directory
+        mode: '0755'
+      tags: ['download']
+    
+    - name: 下载升级包
+      get_url:
+        url: "{{ download_url }}"
+        dest: "{{ build_output_dir }}/upgrade.zip"
+        checksum: "{{ 'sha256:' + checksum if checksum else omit }}"
+        mode: '0644'
+      tags: ['download']
+    
+    - name: 解压升级包
+      unarchive:
+        src: "{{ build_output_dir }}/upgrade.zip"
+        dest: "{{ build_output_dir }}"
+        remote_src: no
+      tags: ['download']
+    
+    - name: 检查 injectived 是否存在
+      stat:
+        path: "{{ build_output_dir }}/injectived"
+      register: injectived_check
+      tags: ['download']
+    
+    - name: 重命名 injectived -> biyachaind
+      copy:
+        src: "{{ build_output_dir }}/injectived"
+        dest: "{{ build_output_dir }}/biyachaind"
+        mode: '0755'
+      when: injectived_check.stat.exists
+      tags: ['download']
+    
+    - name: 验证 biyachaind 存在
+      stat:
+        path: "{{ build_output_dir }}/biyachaind"
+      register: biyachaind_check
+      failed_when: not biyachaind_check.stat.exists
+      tags: ['download']
+    
+    - name: 下载 WASM 库
+      get_url:
+        url: "https://github.com/CosmWasm/wasmvm/releases/download/{{ wasmvm_version }}/libwasmvm.x86_64.so"
+        dest: "{{ build_output_dir }}/libwasmvm.x86_64.so"
+        mode: '0644'
+      tags: ['download']
+    
+    - name: 验证二进制文件可执行
+      shell: |
+        LD_LIBRARY_PATH={{ build_output_dir }} {{ build_output_dir }}/biyachaind version
+      register: binary_version
+      changed_when: false
+      tags: ['download']
+    
+    - name: 显示下载版本
+      debug:
+        msg: "下载完成，版本: {{ binary_version.stdout }}"
+      tags: ['download']
+
+- name: 部署到所有节点
+  hosts: all:!localhost
+  become: no
+  gather_facts: yes
+  
+  vars:
+    # 从命令行传入的变量
+    # upgrade_name: 升级名称
+    # upgrade_binary_dir: 本地二进制文件目录
+    
+  tasks:
+    - name: 创建 Cosmovisor 升级目录
+      file:
+        path: "{{ node_home_base }}/cosmovisor/upgrades/{{ upgrade_name }}/bin"
+        state: directory
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_group }}"
+        mode: '0755'
+      tags: ['deploy']
+    
+    - name: 上传 biyachaind
+      copy:
+        src: "{{ upgrade_binary_dir }}/biyachaind"
+        dest: "{{ node_home_base }}/cosmovisor/upgrades/{{ upgrade_name }}/bin/biyachaind"
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_group }}"
+        mode: '0755'
+      tags: ['deploy']
+    
+    - name: 上传 WASM 库
+      copy:
+        src: "{{ upgrade_binary_dir }}/libwasmvm.x86_64.so"
+        dest: "{{ node_home_base }}/cosmovisor/upgrades/{{ upgrade_name }}/bin/libwasmvm.x86_64.so"
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_group }}"
+        mode: '0644'
+      tags: ['deploy']
+    
+    - name: 验证部署
+      shell: |
+        LD_LIBRARY_PATH={{ node_home_base }}/cosmovisor/upgrades/{{ upgrade_name }}/bin \
+        {{ node_home_base }}/cosmovisor/upgrades/{{ upgrade_name }}/bin/biyachaind version
+      register: deployed_version
+      changed_when: false
+      tags: ['deploy']
+    
+    - name: 显示部署结果
+      debug:
+        msg: "{{ inventory_hostname }} 部署完成，版本: {{ deployed_version.stdout }}"
+      tags: ['deploy']

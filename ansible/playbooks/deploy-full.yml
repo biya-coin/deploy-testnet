@@ -1,0 +1,186 @@
+---
+# Ansible Playbook - 完整部署流程（节点 + Peggy 合约 + Peggo）
+# 参考 peggo-deploy.sh 的完整流程
+
+# Play 1: 本地准备工作（只执行一次，不受 --limit 影响）
+- name: 本地准备 - Peggy 合约部署
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  tags:
+    - local_prepare
+    - always
+  
+  vars:
+    local_config_dir: "{{ playbook_dir }}/../chain-deploy-config"
+    local_binary_dir: "{{ playbook_dir }}/../build/bin"
+    
+  tasks:
+    - name: 显示本地准备工作信息
+      debug:
+        msg: |
+          ==========================================
+          本地准备工作 - Peggy 合约部署
+          ==========================================
+          {% if deploy_peggy_contract | default(true) %}
+          步骤:
+          1. 准备 Peggy genesis 配置
+          2. 部署 Peggy 合约到以太坊 Sepolia（只执行一次！）
+          3. 更新所有节点的 genesis.json
+          ==========================================
+          注意: 此步骤在本地执行，不会SSH到远程服务器
+          {% else %}
+          跳过合约部署（--node-only 模式）
+          ==========================================
+          {% endif %}
+      run_once: true
+      
+    - name: 检查配置文件目录是否存在
+      stat:
+        path: "{{ local_config_dir }}"
+      register: config_dir_stat
+      run_once: true
+      
+    - name: 验证配置目录存在
+      fail:
+        msg: "配置目录 {{ local_config_dir }} 不存在，请先运行 chain-stresser generate 生成配置文件"
+      when: not config_dir_stat.stat.exists
+      run_once: true
+    
+    # 注意：合约部署不需要二进制文件包，二进制文件只在节点部署时需要
+    # prepare-peggy-genesis role 使用的是 playbook_dir/../build/bin/biyachaind
+    
+    - name: 准备 Peggy genesis 配置
+      include_role:
+        name: prepare-peggy-genesis
+      when: deploy_peggy_contract | default(true)
+    
+    - name: 部署 Peggy 合约到以太坊
+      include_role:
+        name: deploy-peggy-contract
+      when: deploy_peggy_contract | default(true)
+
+# Play 2: 远程节点部署（对每个节点执行）
+- name: 远程节点部署 - 节点和 Peggo
+  hosts: all
+  become: yes
+  gather_facts: yes
+  tags:
+    - remote_deploy
+    - never  # 默认不执行，除非明确指定
+  
+  vars:
+    local_config_dir: "{{ playbook_dir }}/../chain-deploy-config"
+    local_binary_dir: "{{ playbook_dir }}/../build/bin"
+    
+  pre_tasks:
+    - name: 显示当前连接的服务器信息（在密码提示前）
+      debug:
+        msg: |
+          
+          ==========================================
+          ⚠️  即将连接到服务器，请输入密码
+          ==========================================
+          节点名称: {{ node_type }}-{{ node_index }}
+          服务器IP: {{ ansible_host | default(inventory_hostname) }}
+          节点类型: {{ '共识节点（indexer=null）' if node_type == 'validator' else '哨兵节点/RPC节点（indexer=kv）' }}
+          ==========================================
+          提示: 接下来将要求您输入此服务器的密码
+            - SSH password: 用于连接到 {{ ansible_host | default(inventory_hostname) }}
+            - BECOME password: 用于执行 sudo 操作（如果与 SSH 密码相同，直接按回车）
+          ==========================================
+          
+      run_once: false
+    
+    - name: 收集服务器信息
+      setup:
+      when: true
+    
+    - name: 显示节点部署流程信息
+      debug:
+        msg: |
+          ==========================================
+          节点部署: {{ node_type }}-{{ node_index }}
+          服务器地址: {{ ansible_host | default(inventory_hostname) }}
+          节点类型: {{ '共识节点（indexer=null）' if node_type == 'validator' else '哨兵节点/RPC节点（indexer=kv）' }}
+          ==========================================
+          部署步骤:
+          1. 部署节点二进制和配置（包含已更新的 genesis.json）
+          2. 启动节点服务
+          {% if node_type == 'validator' %}
+          3. 等待节点就绪
+          {% if (register_orchestrator | default(true)) %}4. 注册 orchestrator 地址（仅第一个节点）{% endif %}
+          {% if (deploy_peggo | default(true)) %}5. 部署 Peggo Orchestrator{% endif %}
+          {% endif %}
+          ==========================================
+      run_once: false
+  
+  roles:
+    # 部署节点（二进制和配置）到远程服务器
+    - role: deploy-node
+      when: true  # 总是执行
+  
+  post_tasks:
+    # 等待节点服务启动（仅共识节点）
+    - name: 等待节点 RPC 就绪
+      wait_for:
+        host: "127.0.0.1"
+        port: 26757
+        delay: 5
+        timeout: 60
+      when: node_type == 'validator'
+      failed_when: false
+      changed_when: false
+    
+    - name: 显示节点部署完成信息
+      debug:
+        msg: |
+          ==========================================
+          节点部署完成: {{ node_type }}-{{ node_index }}
+          ==========================================
+          - 节点服务: biyachaind
+          ==========================================
+
+# Play 3: 部署 Peggo（单独的 play，所有节点部署完成后执行）
+- name: 部署 Peggo Orchestrator
+  hosts: all
+  become: yes
+  gather_facts: yes
+  tags:
+    - deploy_peggo
+    - never  # 默认不执行，除非明确指定
+  
+  tasks:
+    - name: 检查是否为验证者节点
+      set_fact:
+        is_validator: "{{ node_type == 'validator' }}"
+    
+    - name: 跳过非验证者节点
+      debug:
+        msg: "跳过非验证者节点: {{ inventory_hostname }}"
+      when: not is_validator
+    
+    - name: 显示 Peggo 部署信息
+      debug:
+        msg: |
+          ==========================================
+          部署 Peggo: {{ inventory_hostname }}
+          ==========================================
+      when: is_validator
+    
+    - name: 部署 Peggo Orchestrator
+      include_role:
+        name: deploy-peggo
+      when: is_validator
+    
+    - name: 显示 Peggo 部署完成信息
+      debug:
+        msg: |
+          ==========================================
+          Peggo 部署完成: {{ inventory_hostname }}
+          ==========================================
+          - Peggo 服务: peggo
+          - 私钥将在注册完成后删除
+          ==========================================
+      when: is_validator
+

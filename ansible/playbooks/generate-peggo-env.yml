@@ -1,0 +1,18 @@
+---
+# 本地生成 Peggo .env 文件并上传到远程服务器
+# 用法: ansible-playbook -i inventory.yml playbooks/generate-peggo-env.yml
+
+- name: 生成并上传 Peggo .env 文件
+  hosts: all:!localhost
+  gather_facts: no
+  
+  vars:
+    local_config_dir: "{{ playbook_dir | dirname }}/chain-deploy-config"
+    peggo_home: "/home/{{ deploy_user }}/.peggo"
+  
+  tasks:
+    - name: 仅处理 validator 节点
+      include_role:
+        name: generate-peggo-env
+      when: node_type == 'validator'
+

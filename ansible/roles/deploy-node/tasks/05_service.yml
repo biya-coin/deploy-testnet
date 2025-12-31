@@ -1,0 +1,200 @@
+---
+# ==========================================
+# 任务模块：Cosmovisor 系统服务配置
+# ==========================================
+# 功能：
+#   1. 部署 Cosmovisor systemd 服务文件
+#   2. 配置服务依赖关系
+#   3. 启动和验证服务
+#   4. 等待服务就绪
+# ==========================================
+
+- name: 显示 Cosmovisor 服务部署信息
+  debug:
+    msg: |
+      开始部署 Cosmovisor 系统服务
+      - 服务名称: biyachaind
+      - Cosmovisor 路径: {{ gopath }}/bin/cosmovisor
+      - 数据目录: {{ node_home_base }}
+      - Genesis 二进制: {{ node_home_base }}/cosmovisor/genesis/bin/biyachaind
+  tags: ['service']
+
+# ------------------------------------------
+# 服务文件部署
+# ------------------------------------------
+- name: 部署 Cosmovisor Systemd 服务文件
+  template:
+    src: "biyachaind.service.j2"
+    dest: "/etc/systemd/system/biyachaind.service"
+    owner: root
+    group: root
+    mode: '0644'
+  become: yes
+  notify: reload systemd
+  tags: ['service', 'systemd']
+
+- name: 强制刷新 systemd 配置
+  systemd:
+    daemon_reload: yes
+  become: yes
+  tags: ['service', 'systemd']
+
+- name: 显示服务文件部署完成
+  debug:
+    msg: "Cosmovisor Systemd 服务文件已创建: /etc/systemd/system/biyachaind.service"
+  tags: ['service', 'systemd']
+
+# ------------------------------------------
+# 服务启动前检查
+# ------------------------------------------
+- name: 检查服务是否已存在
+  systemd:
+    name: "biyachaind"
+  register: service_status_before
+  failed_when: false
+  become: yes
+  tags: ['service', 'check']
+
+- name: 显示服务当前状态
+  debug:
+    msg: |
+      服务当前状态: {{ service_status_before.status.ActiveState | default('未安装') }}
+      加载状态: {{ service_status_before.status.LoadState | default('未加载') }}
+  tags: ['service', 'check']
+
+# ------------------------------------------
+# 启动服务
+# ------------------------------------------
+- name: 启动 Cosmovisor 节点服务
+  systemd:
+    name: "biyachaind"
+    state: started
+    enabled: yes
+  become: yes
+  register: service_start
+  retries: "{{ max_retries | default(3) }}"
+  delay: "{{ retry_delay | default(5) }}"
+  until: service_start is success
+  tags: ['service', 'start']
+
+- name: 等待服务启动稳定
+  wait_for:
+    timeout: 10
+  tags: ['service', 'start']
+
+# ------------------------------------------
+# 服务状态验证
+# ------------------------------------------
+- name: 检查服务启动后状态
+  systemd:
+    name: "biyachaind"
+  register: service_status_after
+  become: yes
+  retries: 3
+  delay: 2
+  until: service_status_after.status.ActiveState == "active"
+  tags: ['service', 'verify']
+
+- name: 显示服务最终状态
+  debug:
+    msg: |
+      Cosmovisor 服务启动完成:
+      - 服务名称: biyachaind
+      - 状态: {{ service_status_after.status.ActiveState }}
+      - 子状态: {{ service_status_after.status.SubState }}
+      - PID: {{ service_status_after.status.MainPID | default('N/A') }}
+      - 开机自启: {{ '已启用' if service_status_after.status.UnitFileState == 'enabled' else '未启用' }}
+      - 管理方式: Cosmovisor
+  tags: ['service', 'verify']
+
+- name: 验证服务运行正常
+  fail:
+    msg: "Cosmovisor 服务 biyachaind 启动失败，状态: {{ service_status_after.status.ActiveState }}"
+  when: service_status_after.status.ActiveState != "active"
+  tags: ['service', 'verify']
+
+# ------------------------------------------
+# RPC 端口就绪检查
+# ------------------------------------------
+- name: 等待 RPC 端口就绪
+  wait_for:
+    host: 127.0.0.1
+    port: "{{ rpc_port | default(26757) }}"
+    state: started
+    timeout: "{{ rpc_ready_timeout | default(120) }}"
+    delay: 5
+  ignore_errors: yes
+  register: rpc_ready
+  tags: ['service', 'verify', 'rpc']
+
+- name: 显示 RPC 就绪状态
+  debug:
+    msg: |
+      RPC 服务状态: {{ 'READY' if rpc_ready is success else 'NOT READY (可能需要更多时间)' }}
+      RPC 端口: {{ rpc_port | default(26757) }}
+  tags: ['service', 'verify', 'rpc']
+
+# ------------------------------------------
+# 节点状态查询
+# ------------------------------------------
+- name: 查询节点同步状态
+  uri:
+    url: "http://127.0.0.1:{{ rpc_port | default(26757) }}/status"
+    method: GET
+    return_content: yes
+  register: node_status
+  when: rpc_ready is success
+  ignore_errors: yes
+  failed_when: false
+  tags: ['service', 'verify', 'status']
+
+- name: 显示节点区块高度
+  debug:
+    msg: |
+      节点状态:
+      - 区块高度: {{ node_status.json.result.sync_info.latest_block_height | default('N/A') }}
+      - 同步中: {{ node_status.json.result.sync_info.catching_up | default('N/A') }}
+      - 节点ID: {{ node_status.json.result.node_info.id | default('N/A') }}
+  when: 
+    - rpc_ready is success
+    - node_status.json is defined
+  tags: ['service', 'verify', 'status']
+
+# ------------------------------------------
+# 验证 Cosmovisor current 符号链接
+# ------------------------------------------
+- name: 检查 Cosmovisor current 符号链接
+  stat:
+    path: "{{ node_home_base }}/cosmovisor/current"
+  register: current_link
+  tags: ['service', 'verify']
+
+- name: 显示当前使用的二进制版本
+  shell: "readlink -f {{ node_home_base }}/cosmovisor/current"
+  register: current_version
+  when: current_link.stat.exists
+  changed_when: false
+  tags: ['service', 'verify']
+
+- name: 显示 Cosmovisor 当前版本
+  debug:
+    msg: |
+      Cosmovisor 当前版本: {{ current_version.stdout | default('N/A') }}
+  when: current_link.stat.exists
+  tags: ['service', 'verify']
+
+- name: 显示服务部署完成
+  debug:
+    msg: |
+      ✓ Cosmovisor 节点服务部署完成
+      - 服务已启动并运行正常
+      - 可以使用以下命令管理服务:
+        sudo systemctl status biyachaind
+        sudo systemctl restart biyachaind
+        sudo journalctl -u biyachaind -f
+      
+      - Cosmovisor 相关:
+        当前版本: {{ node_home_base }}/cosmovisor/current
+        升级目录: {{ node_home_base }}/cosmovisor/upgrades
+  tags: ['service']
+

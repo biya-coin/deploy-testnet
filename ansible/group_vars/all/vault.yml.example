@@ -1,0 +1,22 @@
+# Ansible Vault 敏感配置示例
+# 使用方法：
+#   1. 复制此文件为 vault.yml
+#   2. 编辑 vault.yml 填入实际值
+#   3. 加密: ansible-vault encrypt group_vars/all/vault.yml
+#   4. 编辑: ansible-vault edit group_vars/all/vault.yml
+#   5. 部署时添加: --ask-vault-pass 或 --vault-password-file
+
+---
+# ==========================================
+# 服务器访问凭证
+# ==========================================
+vault_ansible_user: "ubuntu"
+vault_ansible_ssh_pass: "your_ssh_password_here"
+vault_ansible_become_pass: "your_sudo_password_here"
+
+# ==========================================
+# Peggo 配置（如需要）
+# ==========================================
+# vault_peggo_cosmos_from_passphrase: "your_keyring_password"
+
+

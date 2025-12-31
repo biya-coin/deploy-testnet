@@ -1,0 +1,15 @@
+# 测试代币信息
+# 生成时间: 2025-12-25T10:02:55Z
+# 网络: Sepolia 测试网
+# 部署者: 0x31A5aD37B9B8E20E2e1dE7286B32c0EcAd395862
+
+# 代币信息
+token_address=0x46bcDa267c0023a9dcF6Df499edB6f07A609EE2a
+token_name=Test Token
+token_symbol=TEST
+token_decimals=6
+token_total_supply=1000000
+
+# RPC 配置
+rpc_url=https://ethereum-sepolia.publicnode.com
+chain_id=11155111

@@ -1,0 +1,107 @@
+---
+# Ansible Inventory 文件
+# 定义目标服务器和节点配置
+
+all:
+  vars:
+    # 公共配置参数
+    ansible_user: ubuntu  # 目标服务器用户名
+    ansible_python_interpreter: /usr/bin/python3
+    # 使用密码认证（每次部署时会提示输入密码）
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+    
+    # 部署路径配置
+    deploy_user: ubuntu  # 运行节点的系统用户
+    deploy_group: ubuntu  # 运行节点的系统组
+    node_home_base: /data/biyachain  # 节点主目录
+    deploy_user_home: "/home/{{ deploy_user }}"  # 部署用户的主目录（仅用于环境变量）
+    
+    # 可执行文件配置
+    binary_dir: /data/biyachain/bin  # 独立二进制文件目录（peggo）
+    wasm_lib_dir: /data/biyachain/lib  # WASM 库目录（预留）
+    
+    # Cosmovisor 配置
+    gopath: /data/biyachain/go  # Cosmovisor 安装路径
+    
+    # 链配置
+    chain_id: "biyachain-888"
+    
+    # Peggo 配置
+    peggo_home: "/home/{{ deploy_user }}/.peggo"  # Peggo 主目录
+    peggo_cosmos_chain_id: "biyachain-888"  # Cosmos 链 ID
+    peggo_cosmos_grpc: "tcp://127.0.0.1:10000"  # Cosmos GRPC 地址（默认端口 10000）
+    peggo_tendermint_rpc: "http://127.0.0.1:26757"  # Tendermint RPC 地址（默认端口 26757）
+    peggo_cosmos_fee_denom: "inj"  # Cosmos 费用代币
+    peggo_cosmos_gas_prices: "1600000000inj"  # Cosmos Gas 价格
+    
+    # Peggo 私钥配置（直接私钥模式）
+    # 注意：
+    # 1. 私钥在配置生成时（chain-stresser generate）已导出到 config/peggo_key.json
+    # 2. 部署时自动从 peggo_key.json 读取
+    # 3. 私钥文件在 Peggo 启动 5 秒后自动删除
+    # 4. 下方配置仅作为备用（peggo_key.json 不存在时使用）
+    peggo_cosmos_pk: ""  # Cosmos 私钥（备用，通常不需要手动设置）
+    peggo_eth_pk: ""  # EVM 私钥（备用，通常不需要手动设置）
+    peggo_eth_gas_price_adjustment: "1.3"  # ETH Gas 价格调整系数
+    peggo_eth_max_gas_price: "500gwei"  # ETH 最大 Gas 价格
+    peggo_eth_chain_id: "11155111"  # ETH 链 ID（Sepolia 测试网，需要根据实际配置修改）
+    peggo_eth_rpc: "https://ethereum-sepolia.publicnode.com"  # ETH RPC URL（需要根据实际配置修改）
+    peggo_eth_alchemy_ws: ""  # ETH WebSocket URL（可选）
+    peggo_relay_valsets: "true"  # 是否中继 Valsets
+    peggo_relay_valset_offset_dur: "3m"  # Valset 中继偏移时长
+    peggo_relay_batches: "true"  # 是否中继 Batches
+    peggo_relay_batch_offset_dur: "3m"  # Batch 中继偏移时长
+    peggo_relay_pending_tx_wait_duration: "20m"  # 待处理交易等待时长
+    peggo_min_batch_fee_usd: "0"  # 最小批次费用（USD）
+    
+    # Peggy 合约部署配置
+    # 注意：优先使用本地 build/biyachain 源码目录，以下参数仅在本地源码不存在时作为备用
+    peggy_injective_core_repo: "https://github.com/InjectiveFoundation/injective-core.git"  # injective-core 仓库地址（备用）
+    peggy_injective_core_branch: "v1.17.0"  # injective-core 分支（备用，仅在本地源码不存在时使用）
+    peggy_id: "biyachain-peggyid"  # Peggy ID
+    peggy_power_threshold: "100"  # Peggy 合约 power threshold
+    peggy_validator_powers: "4294967295"  # Peggy 合约 validator powers
+    peggy_deployer_rpc_uri: ""  # 合约部署 RPC URI（留空则使用 peggo_eth_rpc）
+    peggy_deployer_tx_gas_price: "-1"  # 合约部署 Gas Price（-1 表示自动估算）
+    peggy_deployer_tx_gas_limit: "8000000"  # 合约部署 Gas Limit
+    peggy_deployer_from: ""  # 合约部署者地址（可选，留空则使用私钥推导）
+    peggy_deployer_from_pk: "0x99f65f092924fd9c7cb8125255da54ca63733be861d5cdfdb570e41182100ba1"  # 合约部署者私钥（需要配置，用于部署合约）
+    
+  hosts:
+    # 本地主机（用于本地编译）
+    localhost:
+      ansible_host: 127.0.0.1
+      ansible_connection: local
+    
+    # 验证者节点服务器
+    validator-0:
+      ansible_host: 10.8.21.50
+      node_type: validator
+      node_index: 0
+      
+    validator-1:
+      ansible_host: 10.8.45.209
+      node_type: validator
+      node_index: 1
+      
+    validator-2:
+      ansible_host: 10.8.61.62
+      node_type: validator
+      node_index: 2
+      
+    validator-3:
+      ansible_host: 10.8.161.142
+      node_type: validator
+      node_index: 3
+    
+    # 注意：node_type 使用 'sentry'，但实际目录名是 'sentry-nodes'
+    sentry-0:
+      ansible_host: 10.8.155.185
+      node_type: sentry
+      node_index: 0
+    
+    sentry-1:
+      ansible_host: 10.8.160.37
+      node_type: sentry
+      node_index: 1
+

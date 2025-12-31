@@ -1,0 +1,113 @@
+# ==========================================
+# 全局变量配置文件
+# ==========================================
+# 说明：
+#   - 所有节点共享的公共配置
+#   - 敏感信息请放在 vault.yml 中
+#   - 节点特定配置请放在 inventory.yml 中
+# ==========================================
+
+---
+# ==========================================
+# 项目基础配置
+# ==========================================
+project_name: "biyachain"
+chain_id: "biyachain-888"
+eth_chain_id: 1337
+
+# ==========================================
+# 部署用户配置
+# ==========================================
+deploy_user: "{{ vault_ansible_user | default('ubuntu') }}"
+deploy_group: "{{ deploy_user }}"
+
+# ==========================================
+# 目录配置
+# ==========================================
+# 节点数据目录
+node_home_base: "/data/{{ project_name }}"
+# 二进制文件目录
+binary_dir: "/usr/local/{{ project_name }}/bin"
+# WASM 库目录
+wasm_lib_dir: "/usr/local/{{ project_name }}/lib"
+# Peggo 工作目录
+peggo_home: "/home/{{ deploy_user }}/.peggo"
+# 临时部署目录
+deploy_temp_dir: "/tmp/{{ project_name }}-deploy-{{ inventory_hostname }}"
+
+# ==========================================
+# 服务配置
+# ==========================================
+# 节点服务名称
+node_service_name: "{{ project_name }}d"
+# Peggo 服务名称
+peggo_service_name: "peggo"
+
+# ==========================================
+# 网络端口配置
+# ==========================================
+# P2P 端口
+p2p_port: 26756
+# RPC 端口
+rpc_port: 26757
+# gRPC 端口
+grpc_port: 9900
+# API 端口
+api_port: 10337
+# Prometheus 端口
+prometheus_port: 26760
+
+# ==========================================
+# 性能调优配置
+# ==========================================
+# 超时配置（秒）
+service_start_timeout: 90
+service_stop_timeout: 30
+# RPC 就绪等待时间（秒）
+rpc_ready_timeout: 120
+# 文件上传超时（秒）
+upload_timeout: 300
+
+# ==========================================
+# 重试配置
+# ==========================================
+# 最大重试次数
+max_retries: 3
+# 重试延迟（秒）
+retry_delay: 5
+
+# ==========================================
+# 日志配置
+# ==========================================
+# 日志级别
+log_level: "info"
+# 日志格式
+log_format: "json"
+
+# ==========================================
+# 安全配置
+# ==========================================
+# 私钥文件权限
+private_key_mode: '0600'
+# 配置文件权限
+config_file_mode: '0644'
+# 配置目录权限
+config_dir_mode: '0755'
+# 私钥删除延迟（秒，Peggo 启动后）
+private_key_cleanup_delay: 600
+
+# ==========================================
+# Peggy 合约配置
+# ==========================================
+peggy_injective_core_repo: "https://github.com/InjectiveFoundation/injective-core.git"
+peggy_injective_core_branch: "v1.17.0"
+peggy_validator_powers: "4294967295"
+
+# ==========================================
+# 验证检查开关
+# ==========================================
+# 是否验证文件完整性
+verify_file_integrity: true
+# 是否检查服务状态
+verify_service_status: true
+

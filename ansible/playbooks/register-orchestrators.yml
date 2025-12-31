@@ -1,0 +1,555 @@
+---
+# Ansible Playbook: 批量注册所有验证者的 Orchestrator 地址
+# 
+# 使用场景：在所有验证者节点部署完成并开始出块后运行
+# 
+# 使用方法:
+#   ansible-playbook -i inventory.yml playbook-register-orchestrators.yml --ask-pass
+#
+# 说明:
+#   - 每个验证者节点需要单独发送注册交易
+#   - 注册交易会被打包到区块中，所有节点都能查询到
+#   - 建议在至少 2/3 的验证者节点启动并开始出块后运行
+
+- name: 批量注册 Orchestrator 地址
+  hosts: all:!localhost
+  gather_facts: yes
+  become: no
+  
+  vars:
+    # 配置参数
+    binary_dir: /usr/local/biyachain/bin
+    node_home_base: /data/biyachain
+    chain_id: "{{ peggo_cosmos_chain_id | default('biyachain-888') }}"
+    node_rpc: "http://127.0.0.1:26757"
+    gas_prices: "500000000inj"
+    keyring_backend: "test"
+    wasm_lib_dir: /usr/local/biyachain/lib
+  
+  environment:
+    LD_LIBRARY_PATH: "{{ wasm_lib_dir }}:{{ ansible_env.LD_LIBRARY_PATH | default('') }}"
+  
+  tasks:
+    # ========================================
+    # 检查节点类型
+    # ========================================
+    
+    - name: 检查是否为验证者节点
+      set_fact:
+        is_validator: "{{ node_type == 'validator' }}"
+    
+    - name: 跳过非验证者节点
+      debug:
+        msg: "跳过非验证者节点: {{ inventory_hostname }}"
+      when: not is_validator
+    
+    - name: 验证者节点信息
+      debug:
+        msg: |
+          处理验证者节点: {{ inventory_hostname }}
+          节点索引: {{ node_index }}
+      when: is_validator
+    
+    # ========================================
+    # 检查链状态
+    # ========================================
+    
+    - name: 检查链是否正在出块
+      shell: |
+        height1=$(curl -s http://127.0.0.1:26757/status | jq -r '.result.sync_info.latest_block_height' 2>/dev/null || echo "0")
+        sleep 3
+        height2=$(curl -s http://127.0.0.1:26757/status | jq -r '.result.sync_info.latest_block_height' 2>/dev/null || echo "0")
+        if [ "$height1" != "0" ] && [ "$height2" != "0" ] && [ "$height2" -gt "$height1" ]; then
+          echo "chain_is_producing_blocks:$height2"
+        else
+          echo "chain_not_ready:$height2"
+        fi
+      register: chain_status_check
+      failed_when: false
+      changed_when: false
+      when: is_validator
+    
+    - name: 解析链状态
+      set_fact:
+        chain_status: "{{ chain_status_check.stdout.split(':')[0] }}"
+        chain_height: "{{ chain_status_check.stdout.split(':')[1] | default('0') }}"
+      when: 
+        - is_validator
+        - chain_status_check is defined
+    
+    - name: 显示链状态
+      debug:
+        msg: |
+          链状态检查:
+          {% if chain_status == "chain_is_producing_blocks" %}
+          ✓ 链正在正常出块
+          当前高度: {{ chain_height }}
+          {% else %}
+          ✗ 链尚未开始出块或出块异常
+          当前高度: {{ chain_height }}
+          请确保至少 2/3 的验证者节点已启动
+          {% endif %}
+      when: is_validator
+    
+    - name: 检查链状态失败则退出
+      fail:
+        msg: "链尚未开始出块，无法注册 orchestrator。请等待更多验证者节点启动。"
+      when: 
+        - is_validator
+        - chain_status != "chain_is_producing_blocks"
+    
+    # ========================================
+    # 上传 peggo_key.json（用于注册）
+    # ========================================
+    
+    - name: 检查本地 peggo_key.json 是否存在
+      stat:
+        path: "{{ playbook_dir }}/chain-deploy-config/validator-{{ node_index }}/config/peggo_key.json"
+      register: local_peggo_key
+      delegate_to: localhost
+      when: is_validator
+    
+    - name: 上传 peggo_key.json 到远程节点
+      copy:
+        src: "{{ playbook_dir }}/chain-deploy-config/validator-{{ node_index }}/config/peggo_key.json"
+        dest: "{{ node_home_base }}/config/peggo_key.json"
+        mode: '0600'
+      become: yes
+      when: 
+        - is_validator
+        - local_peggo_key.stat.exists
+    
+    # ========================================
+    # 读取地址信息
+    # ========================================
+    
+    - name: 检查 peggo_key.json 是否存在
+      stat:
+        path: "{{ node_home_base }}/config/peggo_key.json"
+      register: peggo_key_exists
+      when: is_validator
+    
+    - name: 检查 peggo_key.json 文件
+      fail:
+        msg: "peggo_key.json 文件不存在: {{ node_home_base }}/config/peggo_key.json"
+      when: 
+        - is_validator
+        - not peggo_key_exists.stat.exists
+    
+    - name: 读取地址信息
+      block:
+        - name: 读取 Validator 地址
+          shell: |
+            jq -r '.validator_address' {{ node_home_base }}/config/peggo_key.json
+          register: validator_addr_result
+          failed_when: validator_addr_result.rc != 0 or validator_addr_result.stdout == ''
+          changed_when: false
+          become: yes
+        
+        - name: 读取 Cosmos 地址
+          shell: |
+            jq -r '.cosmos_address' {{ node_home_base }}/config/peggo_key.json
+          register: cosmos_addr_result
+          failed_when: cosmos_addr_result.rc != 0 or cosmos_addr_result.stdout == ''
+          changed_when: false
+          become: yes
+        
+        - name: 读取 EVM 地址
+          shell: |
+            jq -r '.evm_address' {{ node_home_base }}/config/peggo_key.json
+          register: evm_addr_result
+          failed_when: evm_addr_result.rc != 0 or evm_addr_result.stdout == ''
+          changed_when: false
+          become: yes
+        
+        - name: 读取 Cosmos 私钥
+          shell: |
+            jq -r '.cosmos_private_key' {{ node_home_base }}/config/peggo_key.json
+          register: priv_key_result
+          failed_when: priv_key_result.rc != 0 or priv_key_result.stdout == ''
+          changed_when: false
+          become: yes
+          no_log: true
+        
+        - name: 格式化 EVM 地址
+          set_fact:
+            evm_address_formatted: "0x{{ evm_addr_result.stdout | lower }}"
+          when: not evm_addr_result.stdout.startswith('0x')
+        
+        - name: 格式化 EVM 地址（已有前缀）
+          set_fact:
+            evm_address_formatted: "{{ evm_addr_result.stdout | lower }}"
+          when: evm_addr_result.stdout.startswith('0x')
+        
+        - name: 显示地址信息
+          debug:
+            msg: |
+              地址信息:
+              - Validator:    {{ validator_addr_result.stdout }}
+              - Orchestrator: {{ cosmos_addr_result.stdout }}
+              - EVM:          {{ evm_address_formatted }}
+      
+      when: is_validator
+    
+    # ========================================
+    # 检查注册状态（检查 delegate_keys 而不是 valsets）
+    # ========================================
+    
+    - name: 检查 orchestrator 是否已在 delegate_keys 中注册
+      shell: |
+        {{ binary_dir }}/biyachaind q peggy module-state \
+          --chain-id="{{ chain_id }}" \
+          --node="{{ node_rpc }}" \
+          -o json 2>/dev/null | \
+        jq -e --arg addr "{{ evm_address_formatted }}" \
+          '.state.delegate_keys[]? | select(.eth_address | ascii_downcase == ($addr | ascii_downcase)) | .eth_address' \
+          2>/dev/null || echo ""
+      register: orchestrator_check
+      failed_when: false
+      changed_when: false
+      when: is_validator
+    
+    - name: 显示注册状态
+      debug:
+        msg: |
+          注册状态检查（delegate_keys）:
+          {% if orchestrator_check.stdout != "" %}
+          ✓ 已在 delegate_keys 中注册
+          EVM 地址: {{ orchestrator_check.stdout }}
+          注意: 将跳过注册
+          {% else %}
+          ⚠ 未在 delegate_keys 中找到注册记录
+          准备执行链上注册交易
+          {% endif %}
+      when: is_validator
+    
+    # ========================================
+    # 执行注册
+    # ========================================
+    
+    - name: 注册 orchestrator 地址
+      block:
+        - name: 创建临时目录
+          tempfile:
+            state: directory
+            prefix: orchestrator_keyring_
+          register: temp_keyring_dir
+        
+        - name: 使用 unsafe-import-eth-key 导入 orchestrator 私钥
+          shell: |
+            set -e
+            PRIV_KEY="{{ priv_key_result.stdout }}"
+            
+            # 使用 expect 自动输入密码（无论什么 keyring backend 都可能需要）
+            # 先检查并安装 expect
+            if ! command -v expect >/dev/null 2>&1; then
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq && apt-get install -y -qq expect >/dev/null 2>&1 || true
+            fi
+            
+            # 使用 expect 处理密码输入
+            if command -v expect >/dev/null 2>&1; then
+              /usr/bin/expect -c "
+                set timeout 30
+                spawn {{ binary_dir }}/biyachaind keys unsafe-import-eth-key temp_orch_key \"$PRIV_KEY\" --keyring-backend={{ keyring_backend }} --home {{ temp_keyring_dir.path }}
+                expect {
+                  \"Enter passphrase to encrypt your key:\" { send \"12345678\r\"; exp_continue }
+                  \"Re-enter passphrase:\" { send \"12345678\r\"; exp_continue }
+                  \"Enter keyring passphrase\" { send \"12345678\r\"; exp_continue }
+                  \"Re-enter keyring passphrase\" { send \"12345678\r\"; exp_continue }
+                  eof
+                }
+              " 2>&1 || true
+            else
+              # 如果 expect 不可用，尝试使用 printf
+              printf "12345678\n12345678\n" | timeout 30 {{ binary_dir }}/biyachaind keys unsafe-import-eth-key temp_orch_key "$PRIV_KEY" \
+                --keyring-backend={{ keyring_backend }} \
+                --home {{ temp_keyring_dir.path }} 2>&1 || true
+            fi
+            
+            # 等待一下确保导入完成
+            sleep 2
+            
+            # 验证导入
+            if {{ binary_dir }}/biyachaind keys show temp_orch_key \
+              --keyring-backend={{ keyring_backend }} \
+              --home {{ temp_keyring_dir.path }} >/dev/null 2>&1; then
+              echo "IMPORT_SUCCESS"
+              exit 0
+            else
+              echo "IMPORT_FAILED"
+              exit 1
+            fi
+          register: import_result
+          become: yes
+          failed_when: false
+          no_log: false
+        
+        - name: 显示导入结果（调试）
+          debug:
+            msg: |
+              导入结果:
+              返回码: {{ import_result.rc | default('未定义') }}
+              标准输出: {{ import_result.stdout | default('无') }}
+              标准错误: {{ import_result.stderr | default('无') }}
+        
+        - name: 提交注册交易（使用 validator/orchestrator 私钥签名）
+          shell: |
+            set -e
+            # 使用导入的私钥提交交易
+            # peggo_key.json 中的私钥既是 validator 账户私钥，也是 orchestrator 私钥
+            # 
+            # set-orchestrator-address 参数说明：
+            # 第一个参数: validator account address (inj开头，不是 injvaloper)
+            # 第二个参数: orchestrator address (inj开头，可以与第一个参数相同)
+            # 第三个参数: EVM 地址 (0x开头)
+            # --from: 必须使用 validator 账户签名
+            if command -v expect >/dev/null 2>&1; then
+              /usr/bin/expect -c "
+                set timeout 60
+                spawn {{ binary_dir }}/biyachaind tx peggy set-orchestrator-address {{ cosmos_addr_result.stdout }} {{ cosmos_addr_result.stdout }} {{ evm_address_formatted }} --from temp_orch_key --chain-id={{ chain_id }} --keyring-backend={{ keyring_backend }} --home {{ temp_keyring_dir.path }} --yes --node={{ node_rpc }} --gas-prices={{ gas_prices }} --gas=auto --gas-adjustment=1.5 -o json
+                expect {
+                  \"Enter keyring passphrase\" { send \"12345678\r\"; exp_continue }
+                  eof
+                }
+              "
+            else
+              # 如果 expect 不可用，尝试使用 printf
+              printf "12345678\n" | {{ binary_dir }}/biyachaind tx peggy set-orchestrator-address \
+                {{ cosmos_addr_result.stdout }} \
+                {{ cosmos_addr_result.stdout }} \
+                {{ evm_address_formatted }} \
+                --from temp_orch_key \
+                --chain-id={{ chain_id }} \
+                --keyring-backend={{ keyring_backend }} \
+                --home {{ temp_keyring_dir.path }} \
+                --yes \
+                --node={{ node_rpc }} \
+                --gas-prices={{ gas_prices }} \
+                --gas=auto \
+                --gas-adjustment=1.5 \
+                -o json
+            fi
+          register: register_tx_result
+          become: yes
+          failed_when: false
+          changed_when: register_tx_result.rc is defined and register_tx_result.rc == 0
+          when: 
+            - import_result.rc is defined
+            - import_result.rc == 0
+            - '"IMPORT_SUCCESS" in import_result.stdout'
+        
+        - name: 显示交易提交失败信息
+          debug:
+            msg: |
+              ✗ 交易提交失败
+              返回码: {{ register_tx_result.rc }}
+              错误信息: {{ register_tx_result.stderr | default(register_tx_result.stdout) }}
+          when: 
+            - register_tx_result is defined
+            - register_tx_result.rc is defined
+            - register_tx_result.rc != 0
+        
+        - name: 显示交易提交结果（调试）
+          debug:
+            msg: |
+              交易提交结果:
+              返回码: {{ register_tx_result.rc | default('未定义') }}
+              标准输出: {{ register_tx_result.stdout | default('无') }}
+          when: 
+            - register_tx_result is defined
+            - register_tx_result.rc is defined
+            - register_tx_result.rc == 0
+        
+        - name: 解析交易哈希
+          set_fact:
+            tx_hash: "{{ register_tx_result.stdout | regex_search('\\{[^}]*\"txhash\"[^}]*\\}') | default(none) | from_json | default({}) | json_query('txhash') | default('') }}"
+          when: 
+            - register_tx_result is defined
+            - register_tx_result.rc is defined
+            - register_tx_result.rc == 0
+            - register_tx_result.stdout != ""
+            - '"txhash" in register_tx_result.stdout'
+          failed_when: false
+        
+        - name: 显示交易哈希
+          debug:
+            msg: "✓ 交易已提交，Transaction Hash: {{ tx_hash }}"
+          when: 
+            - register_tx_result is defined
+            - register_tx_result.rc is defined
+            - register_tx_result.rc == 0
+            - tx_hash is defined
+            - tx_hash != ""
+        
+        - name: 等待交易确认
+          pause:
+            seconds: 5
+          when: 
+            - register_tx_result is defined
+            - register_tx_result.rc is defined
+            - register_tx_result.rc == 0
+        
+        - name: 查询交易结果
+          shell: |
+            {{ binary_dir }}/biyachaind q tx {{ tx_hash }} \
+              --node={{ node_rpc }} \
+              -o json 2>/dev/null
+          register: tx_query_result
+          failed_when: false
+          changed_when: false
+          when: 
+            - register_tx_result is defined
+            - register_tx_result.rc is defined
+            - register_tx_result.rc == 0
+            - tx_hash is defined
+            - tx_hash != ""
+        
+        - name: 解析交易执行结果
+          set_fact:
+            tx_code: "{{ (tx_query_result.stdout | from_json).code | default(1) }}"
+            tx_raw_log: "{{ (tx_query_result.stdout | from_json).raw_log | default('unknown error') }}"
+          when: 
+            - tx_query_result is defined
+            - tx_query_result.rc is defined
+            - tx_query_result.rc == 0
+            - tx_query_result.stdout != ""
+          failed_when: false
+        
+        - name: 清理临时目录
+          file:
+            path: "{{ temp_keyring_dir.path }}"
+            state: absent
+          failed_when: false
+          when: temp_keyring_dir is defined
+      
+      when: 
+        - is_validator
+        - orchestrator_check.stdout == ""
+    
+    # ========================================
+    # 显示结果
+    # ========================================
+    
+    - name: 显示注册结果
+      debug:
+        msg: |
+          ==========================================
+          节点: {{ inventory_hostname }}
+          ==========================================
+          {% if orchestrator_check.stdout != "" %}
+          状态: 已注册（跳过）✓
+          EVM 地址: {{ orchestrator_check.stdout }}
+          {% elif register_tx_result is defined and register_tx_result.rc is defined %}
+          {% if register_tx_result.rc == 0 %}
+          {% if tx_code is defined and tx_code | int == 0 %}
+          状态: 注册成功 ✓
+          Validator:    {{ validator_addr_result.stdout }}
+          Orchestrator: {{ cosmos_addr_result.stdout }}
+          EVM:          {{ evm_address_formatted }}
+          TX Hash:      {{ tx_hash }}
+          {% elif tx_code is defined %}
+          状态: 注册失败 ✗
+          错误: {{ tx_raw_log }}
+          {% else %}
+          状态: 已提交（等待确认）
+          TX Hash: {{ tx_hash }}
+          {% endif %}
+          {% else %}
+          状态: 提交失败 ✗
+          返回码: {{ register_tx_result.rc }}
+          {% endif %}
+          {% else %}
+          状态: 未执行
+          {% endif %}
+          ==========================================
+      when: is_validator
+    
+    # ========================================
+    # 注册完成后删除私钥文件
+    # ========================================
+    
+
+    
+    - name: 删除 .env 文件
+      file:
+        path: "{{ peggo_home | default('/home/ubuntu/.peggo') }}/.env"
+        state: absent
+      become: yes
+      when: 
+        - is_validator
+        - register_tx_result is defined
+        - register_tx_result.rc is defined
+        - register_tx_result.rc == 0
+      ignore_errors: yes
+    
+    - name: 删除 node_key.json 文件
+      file:
+        path: "{{ node_home_base }}/config/node_key.json"
+        state: absent
+      become: yes
+      when: 
+        - is_validator
+        - register_tx_result is defined
+        - register_tx_result.rc is defined
+        - register_tx_result.rc == 0
+      ignore_errors: yes
+    
+    - name: 删除 priv_validator_key.json 文件
+      file:
+        path: "{{ node_home_base }}/config/priv_validator_key.json"
+        state: absent
+      become: yes
+      when: 
+        - is_validator
+        - register_tx_result is defined
+        - register_tx_result.rc is defined
+        - register_tx_result.rc == 0
+      ignore_errors: yes
+    
+    - name: 显示私钥清理结果
+      debug:
+        msg: |
+          ==========================================
+          私钥文件已清理
+          ==========================================
+          已删除:
+          - {{ peggo_home | default('/home/ubuntu/.peggo') }}/.env
+          - {{ node_home_base }}/config/node_key.json
+          - {{ node_home_base }}/config/priv_validator_key.json
+          - {{ node_home_base }}/config/peggo_key.json
+          ==========================================
+      when: 
+        - is_validator
+        - register_tx_result is defined
+        - register_tx_result.rc is defined
+        - register_tx_result.rc == 0
+
+# ========================================
+# 汇总报告
+# ========================================
+
+- name: 生成注册汇总报告
+  hosts: localhost
+  gather_facts: no
+  
+  tasks:
+    - name: 显示完成信息
+      debug:
+        msg: |
+          ==========================================
+          Orchestrator 批量注册完成
+          ==========================================
+          
+          ✓ 所有 orchestrator 已注册
+          ✓ 私钥文件已清理
+          
+          验证注册状态:
+            biyachaind q peggy current-valset \
+              --chain-id=biyachain-888 \
+              --node=http://<validator-ip>:26757 \
+              -o json | jq '.valset.members'
+          
+          应该看到所有验证者的 EVM 地址
+          ==========================================
+

@@ -1,0 +1,100 @@
+---
+# ==========================================
+# 任务模块：环境准备
+# ==========================================
+# 功能：
+#   1. 验证部署用户
+#   2. 停止现有服务
+#   3. 创建必要目录
+#   4. 清理旧数据（可选）
+# ==========================================
+
+- name: 显示开始部署节点信息
+  debug:
+    msg: |
+      ==========================================
+      开始部署节点配置
+      - 节点名称: {{ node_type }}-{{ node_index }}
+      - 服务器: {{ ansible_host | default(inventory_hostname) }}
+      - 节点类型: {{ '共识节点（indexer=null）' if node_type == 'validator' else '哨兵节点/RPC节点（indexer=kv）' }}
+      - 配置目录: {{ node_home_base }}
+      ==========================================
+  tags: ['always']
+
+# ------------------------------------------
+# 用户验证
+# ------------------------------------------
+- name: 检查部署用户是否存在
+  shell: id -u "{{ deploy_user }}" 2>/dev/null || echo "not_found"
+  register: deploy_user_check
+  changed_when: false
+  failed_when: false
+  tags: ['prepare', 'check']
+
+- name: 验证部署用户存在
+  fail:
+    msg: "部署用户 {{ deploy_user }} 不存在，请先创建该用户"
+  when: deploy_user_check.stdout == "not_found"
+  tags: ['prepare', 'check']
+
+# ------------------------------------------
+# 服务清理
+# ------------------------------------------
+- name: 查找所有运行中的节点服务
+  shell: |
+    systemctl list-units --type=service --state=running --no-pager | \
+    grep -i {{ node_service_name }} | \
+    awk '{print $1}' || echo ""
+  register: running_services
+  changed_when: false
+  failed_when: false
+  tags: ['prepare', 'cleanup']
+
+- name: 显示找到的运行中服务
+  debug:
+    msg: |
+      找到以下运行中的 {{ node_service_name }} 服务:
+      {{ running_services.stdout_lines | join('\n') if running_services.stdout_lines else '无' }}
+  when: running_services.stdout_lines | length > 0
+  tags: ['prepare', 'cleanup']
+
+- name: 停止所有运行中的节点服务
+  systemd:
+    name: "{{ item }}"
+    state: stopped
+  loop: "{{ running_services.stdout_lines }}"
+  ignore_errors: yes
+  failed_when: false
+  when: running_services.stdout_lines | length > 0
+  retries: "{{ max_retries | default(3) }}"
+  delay: "{{ retry_delay | default(5) }}"
+  tags: ['prepare', 'cleanup']
+
+- name: 等待服务完全停止
+  wait_for:
+    timeout: "{{ service_stop_timeout | default(30) }}"
+  when: running_services.stdout_lines | length > 0
+  tags: ['prepare', 'cleanup']
+
+# ------------------------------------------
+# 目录创建
+# ------------------------------------------
+- name: 创建节点配置目录
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: "{{ config_dir_mode | default('0755') }}"
+  loop:
+    - "{{ node_home_base }}"
+    - "{{ node_home_base }}/config"
+    - "{{ node_home_base }}/data"
+    - "{{ deploy_temp_dir }}"
+  tags: ['prepare', 'directories']
+
+- name: 显示目录创建完成
+  debug:
+    msg: "节点目录结构已创建: {{ node_home_base }}"
+  tags: ['prepare', 'directories']
+

@@ -1,0 +1,258 @@
+---
+# 在本地准备 Peggy genesis 配置
+# 从配置文件读取 validator 地址，转换为 EVM 地址，更新 genesis.json
+
+- name: 显示开始准备 Peggy genesis 配置
+  debug:
+    msg: |
+      ==========================================
+      在本地准备 Peggy genesis 配置
+      ==========================================
+      将从配置文件读取 validator 地址并转换为 EVM 地址
+      然后更新所有节点的 genesis.json
+      ==========================================
+
+- name: 检查本地配置文件目录是否存在
+  stat:
+    path: "{{ local_config_dir }}"
+  register: config_dir_stat
+  delegate_to: localhost
+  run_once: true
+
+- name: 验证配置文件目录存在
+  fail:
+    msg: "配置文件目录不存在: {{ local_config_dir }}，请先运行 chain-stresser generate"
+  when: not config_dir_stat.stat.exists
+  delegate_to: localhost
+  run_once: true
+
+- name: 检查 jq 是否已安装（本地）
+  command: which jq
+  register: jq_check_local
+  delegate_to: localhost
+  run_once: true
+  failed_when: false
+  changed_when: false
+
+- name: 安装 jq（如果未安装）
+  apt:
+    name: jq
+    state: present
+    update_cache: yes
+  when: jq_check_local.rc != 0
+  become: yes
+  delegate_to: localhost
+  run_once: true
+
+- name: 检查 biyachaind 二进制文件是否存在（本地，用于地址转换）
+  stat:
+    path: "{{ local_binary_dir }}/biyachaind"
+  register: biyachaind_local_stat
+  delegate_to: localhost
+  run_once: true
+  vars:
+    local_binary_dir: "{{ playbook_dir }}/../bin"  # 假设本地有二进制文件
+
+- name: 从所有 validator 的 peggo_evm_key.json 读取 EVM 地址
+  shell: |
+    # 读取所有 validator 的 EVM 地址（从 peggo_evm_key.json）
+    addresses=""
+    powers=""
+    for validator_dir in {{ local_config_dir }}/validator-*/; do
+      peggo_evm_key_file="${validator_dir}config/peggo_evm_key.json"
+      if [ -f "$peggo_evm_key_file" ]; then
+        evm_addr=$(jq -r '.evm_address' "$peggo_evm_key_file" 2>/dev/null || echo "")
+        if [ -n "$evm_addr" ] && [ "$evm_addr" != "null" ]; then
+          if [ -n "$addresses" ]; then
+            addresses="${addresses},"
+            powers="${powers},"
+          fi
+          addresses="${addresses}0x${evm_addr}"
+          powers="${powers}1073741823"
+        fi
+      fi
+    done
+    echo "$addresses"
+    echo "$powers" >&2
+  register: all_validator_evm_addrs
+  delegate_to: localhost
+  run_once: true
+  failed_when: false
+  changed_when: false
+
+- name: 读取第一个 validator 的 Cosmos 地址（从 keyring 或 genesis.json）
+  shell: |
+    validator_dir="{{ local_config_dir }}/validator-0"
+    # 首先尝试从 keyring 读取
+    if [ -d "${validator_dir}/keyring-test" ] || [ -d "${validator_dir}/keyring-file" ]; then
+      # 尝试从 keyring 读取
+      cosmos_addr=$(biyachaind keys show validator --keyring-backend test --home "$validator_dir" 2>/dev/null | grep -E "^  address:" | awk '{print $2}' || echo "")
+      if [ -n "$cosmos_addr" ]; then
+        echo "$cosmos_addr"
+        exit 0
+      fi
+    fi
+    # 如果 keyring 读取失败，从 genesis.json 读取
+    genesis_file="${validator_dir}/config/genesis.json"
+    if [ -f "$genesis_file" ]; then
+      cosmos_addr=$(jq -r '.app_state.genutil.gen_txs[0].body.messages[0].delegator_address' "$genesis_file" 2>/dev/null || echo "")
+      if [ -n "$cosmos_addr" ] && [ "$cosmos_addr" != "null" ]; then
+        echo "$cosmos_addr"
+      else
+        echo ""
+      fi
+    else
+      echo ""
+    fi
+  register: first_validator_inj_addr
+  delegate_to: localhost
+  run_once: true
+  failed_when: false
+  changed_when: false
+
+- name: 读取第一个 validator 的 EVM 地址（从 peggo_evm_key.json）
+  shell: |
+    peggo_evm_key_file="{{ local_config_dir }}/validator-0/config/peggo_evm_key.json"
+    if [ -f "$peggo_evm_key_file" ]; then
+      evm_addr=$(jq -r '.evm_address' "$peggo_evm_key_file" 2>/dev/null || echo "")
+      if [ -n "$evm_addr" ] && [ "$evm_addr" != "null" ]; then
+        echo "0x${evm_addr}"
+      else
+        echo ""
+      fi
+    else
+      echo ""
+    fi
+  register: first_validator_evm_addr
+  delegate_to: localhost
+  run_once: true
+  failed_when: false
+  changed_when: false
+
+- name: 设置所有 validator 地址变量
+  set_fact:
+    all_validator_evm_addresses: "{{ all_validator_evm_addrs.stdout }}"
+    all_validator_powers: "{{ all_validator_evm_addrs.stderr }}"
+    genesis_inj_addr: "{{ first_validator_inj_addr.stdout }}"
+    genesis_evm_addr: "{{ first_validator_evm_addr.stdout }}"
+    validator_inj_addr: "{{ first_validator_inj_addr.stdout }}"
+    validator_evm_addr: "{{ first_validator_evm_addr.stdout }}"
+  delegate_to: localhost
+  run_once: true
+
+- name: 验证至少有一个 validator 地址
+  fail:
+    msg: |
+      无法获取任何 validator EVM 地址！
+      
+      请检查：
+      - 配置文件是否正确生成（chain-stresser generate）
+      - peggo_evm_key.json 文件是否存在于 {{ local_config_dir }}/validator-*/config/
+      - peggo_evm_key.json 中是否包含 evm_address 字段
+      - validator keyring 或 genesis.json 中是否有 validator cosmos 地址
+      
+      调试信息：
+      - 所有 validator EVM 地址: "{{ all_validator_evm_addresses | default('空') }}"
+      - 第一个 validator Injective 地址: "{{ genesis_inj_addr | default('空') }}"
+      - 第一个 validator EVM 地址: "{{ genesis_evm_addr | default('空') }}"
+  delegate_to: localhost
+  run_once: true
+  when: all_validator_evm_addresses == '' or genesis_evm_addr == ''
+
+- name: 显示所有 validator 地址信息
+  debug:
+    msg: |
+      Validator 地址信息:
+      - 所有 Validator EVM 地址: {{ all_validator_evm_addresses }}
+      - 所有 Validator Powers: {{ all_validator_powers }}
+      - 第一个 Validator Injective 地址: {{ genesis_inj_addr }}
+      - 第一个 Validator EVM 地址: {{ genesis_evm_addr }}
+  delegate_to: localhost
+  run_once: true
+
+- name: 构建所有 validator 的 members 数组（JSON 格式）
+  shell: |
+    python3 << 'PYEOF'
+    import json
+    addresses = "{{ all_validator_evm_addresses }}".split(',')
+    powers = "{{ all_validator_powers }}".split(',')
+    members = []
+    for addr, power in zip(addresses, powers):
+        if addr and power:
+            members.append({
+                "power": int(power),
+                "ethereum_address": addr
+            })
+    print(json.dumps(members))
+    PYEOF
+  register: members_json_result
+  delegate_to: localhost
+  run_once: true
+  when: all_validator_evm_addresses is defined and all_validator_evm_addresses != ''
+
+- name: 设置 members JSON 变量
+  set_fact:
+    valset_members_json: "{{ members_json_result.stdout }}"
+  delegate_to: localhost
+  run_once: true
+
+- name: 更新所有节点的 genesis.json（添加所有 validator 的 Peggy 配置，所有节点使用相同配置）
+  shell: |
+    # 更新所有节点（validators 和 sentry-nodes）
+    for node_dir in {{ local_config_dir }}/validator-*/ {{ local_config_dir }}/sentry-*/; do
+      genesis_file="${node_dir}config/genesis.json"
+      if [ -f "$genesis_file" ]; then
+        # 检查是否需要更新（合约地址为空或为占位符）
+        bridge_addr=$(jq -r '.app_state.peggy.params.bridge_ethereum_address // ""' "$genesis_file" 2>/dev/null || echo "")
+        if [ -z "$bridge_addr" ] || [ "$bridge_addr" = "null" ] || [ "$bridge_addr" = "0x0000000000000000000000000000000000000000" ] || [ "$bridge_addr" = "" ]; then
+          jq \
+            --argjson members '{{ valset_members_json }}' \
+            --argjson chain_id "{{ peggo_eth_chain_id | default('11155111') }}" \
+            --arg orchestrator "{{ validator_inj_addr }}" \
+            '
+            .app_state.peggy.params.bridge_ethereum_address = "0x0000000000000000000000000000000000000000"
+            | .app_state.peggy.params.bridge_chain_id = ($chain_id | tonumber)
+            | .app_state.peggy.params.bridge_contract_start_height = 0
+            | .app_state.peggy.last_observed_nonce = "1"
+            | .app_state.peggy.valsets = [
+                {
+                  nonce: "1",
+                  members: $members,
+                  height: "1",
+                  reward_amount: "0",
+                  reward_token: "0x0000000000000000000000000000000000000000"
+                }
+              ]
+            | .app_state.peggy.last_observed_valset = {
+                nonce: "1",
+                members: $members,
+                height: "1",
+                reward_amount: "0",
+                reward_token: "0x0000000000000000000000000000000000000000"
+              }
+            ' "$genesis_file" > "${genesis_file}.tmp" && mv "${genesis_file}.tmp" "$genesis_file"
+          echo "已更新: $genesis_file"
+        else
+          echo "已存在 Peggy 配置，跳过: $genesis_file"
+        fi
+      fi
+    done
+  delegate_to: localhost
+  run_once: true
+  when: validator_inj_addr is defined and validator_inj_addr != '' and valset_members_json is defined
+
+- name: 显示准备完成信息
+  debug:
+    msg: |
+      ==========================================
+      Peggy genesis 配置准备完成
+      ==========================================
+      - 所有 Validator EVM 地址: {{ all_validator_evm_addresses | default('未获取') }}
+      - 第一个 Validator Injective 地址: {{ validator_inj_addr | default('未获取') }}
+      - 第一个 Validator EVM 地址: {{ validator_evm_addr | default('待推导') }}
+      - 已更新所有节点的 genesis.json（所有节点使用相同配置）
+      - 合约地址将在部署后更新
+      ==========================================
+  delegate_to: localhost
+  run_once: true
+

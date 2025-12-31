@@ -1,0 +1,311 @@
+---
+# Peggo 部署任务
+
+- name: 显示开始部署 peggo 信息
+  debug:
+    msg: |
+      ==========================================
+      开始部署 Peggo Orchestrator
+      - 节点名称: {{ node_type }}-{{ node_index }}
+      - 服务器: {{ ansible_host | default(inventory_hostname) }}
+      - Peggo Home: {{ peggo_home }}
+      - 跳过 .env 生成: {{ skip_peggo_env | default(false) }}
+      ==========================================
+
+- name: 检查是否跳过 .env 生成
+  set_fact:
+    should_generate_env: "{{ not (skip_peggo_env | default(false)) }}"
+
+- name: 验证 .env 文件存在（当跳过生成时）
+  stat:
+    path: "{{ peggo_home }}/.env"
+  register: peggo_env_stat
+  when: not should_generate_env
+
+- name: 检查 .env 文件状态
+  fail:
+    msg: |
+      错误: skip_peggo_env=true 但 .env 文件不存在
+      请先使用 ./generate-peggo-env.sh 生成并上传 .env 文件
+  when: 
+    - not should_generate_env
+    - not peggo_env_stat.stat.exists
+
+- name: 检查 peggo 二进制文件是否存在
+  stat:
+    path: "{{ binary_dir }}/peggo"
+  register: peggo_binary_stat
+
+- name: 验证 peggo 二进制文件存在
+  debug:
+    msg: |
+      注意: peggo 二进制文件应该已经在节点部署时从压缩包中解压并安装。
+      如果 peggo 不存在，请确保 biyachain.tar 压缩包中包含 peggo 二进制文件。
+  when: not peggo_binary_stat.stat.exists
+
+- name: 验证 peggo 二进制文件存在（失败）
+  fail:
+    msg: "peggo 二进制文件不存在于 {{ binary_dir }}/peggo。peggo 应该与 biyachaind 和 wasm 库在同一个压缩包中，已在节点部署时解压。请检查压缩包内容。"
+  when: not peggo_binary_stat.stat.exists
+
+- name: 检查节点服务是否运行
+  systemd:
+    name: "biyachaind"
+  register: node_service_status
+  failed_when: false
+  changed_when: false
+
+- name: 验证节点服务已运行
+  fail:
+    msg: "节点服务 biyachaind 未运行，请先启动节点服务"
+  when: node_service_status.status.ActiveState != "active"
+
+- name: 停止现有的 peggo 服务（如果存在）
+  systemd:
+    name: "peggo"
+    state: stopped
+  ignore_errors: yes
+  failed_when: false
+
+- name: 等待 peggo 服务完全停止
+  wait_for:
+    timeout: 3
+    delay: 1
+  ignore_errors: yes
+  failed_when: false
+
+- name: 停止可能存在的 tmux orchestrator 会话
+  shell: |
+    if command -v tmux >/dev/null 2>&1; then
+      tmux kill-session -t orchestrator 2>/dev/null || true
+    fi
+  ignore_errors: yes
+  failed_when: false
+
+- name: 强制终止所有残留的 peggo 进程（仅在服务停止后）
+  shell: |
+    set +e  # 不因错误退出
+    
+    # 先检查 peggo 服务是否真的停止了
+    if systemctl is-active --quiet peggo 2>/dev/null; then
+      echo "警告: peggo 服务仍在运行，跳过强制终止"
+      exit 0
+    fi
+    
+    # 使用 pgrep 精确查找 peggo 进程（只匹配进程名为 peggo 的）
+    # -x 表示精确匹配进程名
+    pids=$(pgrep -x peggo 2>/dev/null || echo "")
+    
+    if [ -n "$pids" ]; then
+      echo "发现残留 peggo 进程: $pids"
+      
+      # 先尝试 SIGTERM（优雅终止）
+      for pid in $pids; do
+        if ps -p "$pid" >/dev/null 2>&1; then
+          echo "发送 SIGTERM 到进程 $pid"
+          kill -TERM "$pid" 2>/dev/null || sudo kill -TERM "$pid" 2>/dev/null || true
+        fi
+      done
+      sleep 3
+      
+      # 检查是否还有进程存在
+      remaining=$(pgrep -x peggo 2>/dev/null || echo "")
+      
+      if [ -n "$remaining" ]; then
+        echo "仍有进程未退出，使用 SIGKILL: $remaining"
+        for pid in $remaining; do
+          if ps -p "$pid" >/dev/null 2>&1; then
+            echo "强制终止进程 $pid"
+            kill -9 "$pid" 2>/dev/null || sudo kill -9 "$pid" 2>/dev/null || true
+          fi
+        done
+        sleep 1
+      fi
+      
+      echo "peggo 进程清理完成"
+    else
+      echo "未发现残留 peggo 进程"
+    fi
+    
+    exit 0  # 确保总是成功退出
+  ignore_errors: yes
+  failed_when: false
+  changed_when: false
+
+- name: 创建 peggo 主目录
+  file:
+    path: "{{ peggo_home }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0755'
+
+- name: 创建 peggo 日志目录
+  file:
+    path: "{{ peggo_home }}/logs"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0755'
+
+- name: 检查 peggo_key.json 文件是否存在
+  stat:
+    path: "{{ node_home_base }}/config/peggo_key.json"
+  register: peggo_key_file_stat
+  when: should_generate_env
+
+- name: 从 peggo_key.json 读取私钥
+  shell: |
+    jq -r '.evm_private_key' "{{ node_home_base }}/config/peggo_key.json"
+  register: peggo_key_read_result
+  when: 
+    - should_generate_env
+    - peggo_key_file_stat.stat.exists
+  failed_when: false
+  changed_when: false
+  no_log: true  # 不输出私钥到日志
+
+- name: 从 peggo_key.json 提取私钥
+  set_fact:
+    extracted_eth_pk: "{{ peggo_key_read_result.stdout | trim }}"
+  when: 
+    - should_generate_env
+    - peggo_key_file_stat.stat.exists 
+    - peggo_key_read_result.stdout is defined
+  no_log: true  # 不输出私钥到日志
+
+- name: 验证从 peggo_key.json 读取的私钥格式
+  set_fact:
+    extracted_eth_pk: "{{ extracted_eth_pk if (extracted_eth_pk is defined and extracted_eth_pk | length == 64) else '' }}"
+  when: 
+    - should_generate_env
+    - peggo_key_file_stat.stat.exists
+
+- name: 移除 0x 前缀（如果存在）
+  set_fact:
+    extracted_eth_pk: "{{ extracted_eth_pk | regex_replace('^0x', '') }}"
+  when: 
+    - should_generate_env
+    - extracted_eth_pk is defined 
+    - extracted_eth_pk != '' 
+    - extracted_eth_pk | length == 66
+
+- name: 验证 EVM 私钥格式
+  fail:
+    msg: |
+      EVM 私钥格式不正确或为空！
+      
+      当前值: {{ extracted_eth_pk if extracted_eth_pk is defined else '未定义' }}
+      长度: {{ extracted_eth_pk | length if extracted_eth_pk is defined else 0 }}
+      
+      请检查:
+      1. 配置文件中是否存在 peggo_key.json: {{ node_home_base }}/config/peggo_key.json
+      2. 或在 inventory.yml 中设置 peggo_eth_pk（64 个十六进制字符，不带 0x 前缀）
+  when: 
+    - should_generate_env
+    - extracted_eth_pk is not defined or extracted_eth_pk == '' or extracted_eth_pk | length != 64
+
+- name: 显示 EVM 私钥导出状态（不显示私钥内容）
+  debug:
+    msg: |
+      EVM 私钥读取状态: 成功
+      私钥长度: {{ extracted_eth_pk | length }} 字符
+      格式: 十六进制（不带 0x 前缀）
+      来源: {{ 'config/peggo_key.json' if peggo_key_file_stat.stat.exists else '配置文件' }}
+  when: should_generate_env
+
+- name: 生成 peggo .env 配置文件（包含明文私钥，服务启动后自动删除）
+  template:
+    src: peggo.env.j2
+    dest: "{{ peggo_home }}/.env"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0600'
+  vars:
+    peggo_eth_pk: "{{ extracted_eth_pk }}"
+    peggo_cosmos_pk: "{{ extracted_eth_pk }}"  # Cosmos PK 和 ETH PK 相同
+  when: should_generate_env
+
+- name: 显示安全提示
+  debug:
+    msg: |
+      ==========================================
+      安全提示
+      ==========================================
+      {% if not should_generate_env %}
+      - 使用本地上传的 .env 文件
+      - .env 文件包含明文私钥
+      - 文件权限: 0600 (仅 {{ deploy_user }} 可读写)
+      - Peggo 启动后会自动删除此文件
+      - 私钥在启动时加载到内存
+      - 重启 Peggo 需要重新上传 .env 文件
+      {% else %}
+      - .env 文件在远程生成
+      - .env 文件包含明文私钥
+      - 文件权限: 0600 (仅 {{ deploy_user }} 可读写)
+      - Peggo 启动后会自动删除此文件
+      - 私钥在启动时加载到内存
+      - 重启 Peggo 需要重新部署
+      {% endif %}
+      ==========================================
+
+- name: 部署 peggo systemd 服务文件
+  template:
+    src: peggo.service.j2
+    dest: "/etc/systemd/system/peggo.service"
+    mode: '0644'
+  notify: reload systemd
+
+- name: 重新加载 systemd
+  systemd:
+    daemon_reload: yes
+
+- name: 启用 peggo 服务
+  systemd:
+    name: "peggo"
+    enabled: yes
+    state: started
+
+- name: 等待 peggo 服务启动
+  wait_for:
+    timeout: 10
+    delay: 1
+  ignore_errors: yes
+  failed_when: false
+
+- name: 检查 peggo 服务状态
+  systemd:
+    name: "peggo"
+  register: peggo_service_status
+  failed_when: false
+  changed_when: false
+
+- name: 显示 peggo 服务状态
+  debug:
+    msg: |
+      Peggo 服务状态:
+      - 名称: peggo
+      - 状态: {{ peggo_service_status.status.ActiveState | default('unknown') }}
+      - 子状态: {{ peggo_service_status.status.SubState | default('unknown') }}
+      - 已启用: {{ peggo_service_status.status.UnitFileState | default('unknown') }}
+      - 管理命令:
+        sudo systemctl start peggo
+        sudo systemctl stop peggo
+        sudo systemctl status peggo
+        sudo journalctl -u peggo -f
+      - 如果服务未启动，请查看日志:
+        sudo journalctl -u peggo -n 50
+
+- name: 查看 peggo 服务日志（如果服务未运行）
+  shell: |
+    sudo journalctl -u peggo -n 30 --no-pager || echo "无法获取日志"
+  register: peggo_logs
+  when: peggo_service_status.status.ActiveState != "active"
+  failed_when: false
+  changed_when: false
+
+- name: 显示 peggo 服务日志（如果服务未运行）
+  debug:
+    msg: "{{ peggo_logs.stdout_lines }}"
+  when: peggo_service_status.status.ActiveState != "active" and peggo_logs.stdout_lines is defined
+

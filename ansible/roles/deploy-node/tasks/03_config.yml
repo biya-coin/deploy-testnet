@@ -1,0 +1,122 @@
+---
+# ==========================================
+# 任务模块：配置文件部署
+# ==========================================
+# 功能：
+#   1. 打包本地配置文件
+#   2. 上传到目标服务器
+#   3. 解压配置文件
+#   4. 设置正确的权限
+# ==========================================
+
+- name: 设置配置文件源路径
+  set_fact:
+    config_source_dir: "{{ local_config_dir }}/{{ node_type }}-{{ node_index }}"
+  tags: ['config']
+
+- name: 显示配置部署信息
+  debug:
+    msg: |
+      开始部署配置文件
+      - 节点类型: {{ node_type }}-{{ node_index }}
+      - 源目录: {{ config_source_dir }}
+      - 目标目录: {{ node_home_base }}
+  tags: ['config']
+
+# ------------------------------------------
+# 本地配置打包（在 localhost 执行）
+# 排除敏感文件：keyring-test 目录和 peggo_evm_key.json
+# ------------------------------------------
+- name: 打包本地配置文件（在控制节点执行，排除敏感文件）
+  shell: |
+    cd "{{ config_source_dir }}"
+    tar czf "{{ local_config_dir }}/{{ node_type }}-{{ node_index }}-config.tar.gz" \
+      --exclude='keyring-test' \
+      --exclude='keyring-file' \
+      --exclude='peggo_evm_key.json' \
+      --exclude='peggo_key.json' \
+      --exclude='peggo.env' \
+      .
+  delegate_to: localhost
+  run_once: true
+  tags: ['config', 'package']
+
+- name: 显示配置包创建完成
+  debug:
+    msg: |
+      配置包已创建: {{ local_config_dir }}/{{ node_type }}-{{ node_index }}-config.tar.gz
+      （已排除：keyring-test, peggo_evm_key.json, peggo_key.json）
+  tags: ['config', 'package']
+
+# ------------------------------------------
+# 上传配置到目标服务器
+# ------------------------------------------
+- name: 上传配置文件包到目标服务器
+  copy:
+    src: "{{ local_config_dir }}/{{ node_type }}-{{ node_index }}-config.tar.gz"
+    dest: "{{ deploy_temp_dir }}/config.tar.gz"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0644'
+  tags: ['config', 'upload']
+
+- name: 解压配置文件到节点目录
+  unarchive:
+    src: "{{ deploy_temp_dir }}/config.tar.gz"
+    dest: "{{ node_home_base }}"
+    remote_src: yes
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+  tags: ['config', 'extract']
+
+- name: 显示配置解压完成
+  debug:
+    msg: "配置文件已解压到: {{ node_home_base }}"
+  tags: ['config', 'extract']
+
+# ------------------------------------------
+# 权限设置
+# ------------------------------------------
+- name: 设置配置目录权限
+  file:
+    path: "{{ node_home_base }}/config"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: "{{ config_dir_mode | default('0755') }}"
+    recurse: yes
+  tags: ['config', 'permissions']
+
+- name: 设置配置文件权限（公共配置）
+  shell: |
+    find {{ node_home_base }}/config -type f \
+      -not -name '*key*.json' \
+      -exec chmod {{ config_file_mode | default('0644') }} {} \;
+  tags: ['config', 'permissions']
+
+- name: 验证关键配置文件存在
+  stat:
+    path: "{{ node_home_base }}/config/{{ item }}"
+  loop:
+    - "genesis.json"
+    - "config.toml"
+    - "app.toml"
+  register: config_files_check
+  tags: ['config', 'verify']
+
+- name: 检查配置文件验证结果
+  fail:
+    msg: "缺少关键配置文件: {{ item.item }}"
+  when: not item.stat.exists
+  loop: "{{ config_files_check.results }}"
+  tags: ['config', 'verify']
+
+- name: 显示配置文件验证通过
+  debug:
+    msg: |
+      配置文件验证通过:
+      - genesis.json: ✓
+      - config.toml: ✓
+      - app.toml: ✓
+  tags: ['config', 'verify']
+

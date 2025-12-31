@@ -1,0 +1,32 @@
+---
+# 在本地生成 Peggo .env 文件，然后上传到远程服务器
+- name: 读取本地 peggo_evm_key.json
+  slurp:
+    src: "{{ local_config_dir }}/validator-{{ node_index }}/config/peggo_evm_key.json"
+  register: peggo_evm_key_content
+  delegate_to: localhost
+
+- name: 解析 EVM 私钥
+  set_fact:
+    evm_private_key: "{{ (peggo_evm_key_content.content | b64decode | from_json).evm_private_key }}"
+  no_log: true
+
+- name: 在本地生成 .env 文件（保留不删除）
+  template:
+    src: peggo.env.j2
+    dest: "{{ local_config_dir }}/validator-{{ node_index }}/.env"
+    mode: '0600'
+  vars:
+    peggo_eth_pk: "{{ evm_private_key }}"
+    peggo_cosmos_pk: "{{ evm_private_key }}"
+  delegate_to: localhost
+
+- name: 上传 .env 文件到远程服务器
+  copy:
+    src: "{{ local_config_dir }}/validator-{{ node_index }}/.env"
+    dest: "{{ peggo_home }}/.env"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0600'
+
+

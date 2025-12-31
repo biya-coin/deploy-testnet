@@ -1,0 +1,25 @@
+---
+# ==========================================
+# deploy-node 角色默认变量
+# ==========================================
+# 注意：
+#   - 主要配置（路径、用户等）在 inventory.yml 中定义
+#   - 这里只定义 role 特有的默认值
+# ==========================================
+
+# 本地构建配置
+local_binary_dir: "{{ playbook_dir }}/build/bin"  # 本地二进制文件目录
+
+# 临时目录
+deploy_temp_dir: /tmp/ansible_deploy
+
+# 重试配置
+max_retries: 3
+retry_delay: 5
+
+# 超时配置
+rpc_ready_timeout: 120
+
+# 私钥文件权限
+private_key_mode: '0600'
+

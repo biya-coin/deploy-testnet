@@ -1,0 +1,100 @@
+---
+# 注册单个 validator
+- name: 设置 validator 信息
+  set_fact:
+    validator_index: "{{ validator_dir_item.path | basename }}"
+    validator_home: "{{ validator_dir_item.path }}"
+
+- name: 读取 peggo_evm_key.json
+  slurp:
+    src: "{{ validator_home }}/config/peggo_evm_key.json"
+  register: peggo_evm_key
+  failed_when: false
+
+- name: 跳过无效的 validator
+  meta: end_host
+  when: peggo_evm_key.failed or not peggo_evm_key.content
+
+- name: 解析地址信息
+  set_fact:
+    orchestrator_cosmos_address: "{{ (peggo_evm_key.content | b64decode | from_json).cosmos_address }}"
+    orchestrator_evm_address: "0x{{ (peggo_evm_key.content | b64decode | from_json).evm_address }}"
+
+- name: 获取 validator 账户地址
+  shell: |
+    {{ binary_dir }}/biyachaind keys show validator \
+      --keyring-backend=test \
+      --home "{{ validator_home }}" \
+      --output json | jq -r '.address'
+  register: validator_address_result
+  changed_when: false
+  timeout: 5
+
+- name: 设置 validator 地址
+  set_fact:
+    validator_address: "{{ validator_address_result.stdout | trim }}"
+
+- name: 检查是否已注册
+  shell: |
+    {{ binary_dir }}/biyachaind q peggy module-state \
+      --chain-id="{{ chain_id }}" \
+      --node="{{ node_rpc }}" \
+      -o json 2>/dev/null | \
+    jq -e --arg addr "{{ orchestrator_evm_address }}" \
+      '.state.delegate_keys[]? | select(.eth_address | ascii_downcase == ($addr | ascii_downcase))'
+  register: check_registered
+  failed_when: false
+  changed_when: false
+  timeout: 10
+
+- name: 显示已注册状态
+  debug:
+    msg: "✓ Validator {{ validator_index }} ({{ orchestrator_evm_address }}) 已注册，跳过"
+  when: check_registered.rc == 0
+
+- name: 提交注册交易（validator 绑定 orchestrator）
+  shell: |
+    {{ binary_dir }}/biyachaind tx peggy set-orchestrator-address \
+      "{{ validator_address }}" \
+      "{{ orchestrator_cosmos_address }}" \
+      "{{ orchestrator_evm_address }}" \
+      --from validator \
+      --chain-id="{{ chain_id }}" \
+      --keyring-backend=test \
+      --home "{{ validator_home }}" \
+      --yes \
+      --node="{{ node_rpc }}" \
+      --gas-prices="{{ gas_prices }}" \
+      --gas=200000 \
+      -o json
+  register: tx_result
+  when: check_registered.rc != 0
+  failed_when: false
+  timeout: 30
+
+- name: 解析交易结果
+  set_fact:
+    tx_data: "{{ tx_result.stdout | default('{}') | from_json }}"
+  when: check_registered.rc != 0 and tx_result.rc == 0
+
+- name: 显示注册成功
+  debug:
+    msg: |
+      ✓ Validator {{ validator_index }} 注册成功
+      - Validator: {{ validator_address }}
+      - Orchestrator Cosmos: {{ orchestrator_cosmos_address }}
+      - Orchestrator EVM: {{ orchestrator_evm_address }}
+      - TxHash: {{ tx_data.txhash | default('N/A') }}
+  when: check_registered.rc != 0 and tx_result.rc == 0
+
+- name: 显示注册失败
+  debug:
+    msg: |
+      ⚠️  Validator {{ validator_index }} 注册失败
+      错误: {{ tx_result.stderr | default(tx_result.stdout) | default('未知错误') }}
+  when: check_registered.rc != 0 and tx_result.rc != 0
+
+- name: 等待避免 nonce 冲突
+  pause:
+    seconds: 3
+  when: check_registered.rc != 0 and tx_result.rc == 0

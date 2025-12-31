@@ -1,0 +1,46 @@
+[Unit]
+Description=Peggo Orchestrator - {{ node_type }} node {{ node_index }}
+After=network.target biyachaind.service
+Wants=network.target biyachaind.service
+# 禁用默认依赖，避免自动依赖 data.mount
+DefaultDependencies=no
+# 明确不依赖 data.mount
+Conflicts=data.mount
+
+[Service]
+Type=simple
+# 使用与节点相同的用户运行
+User={{ deploy_user }}
+Group={{ deploy_group }}
+WorkingDirectory={{ peggo_home }}
+# 设置环境变量
+Environment="HOME={{ deploy_user_home }}"
+Environment="PATH={{ binary_dir }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="LD_LIBRARY_PATH={{ wasm_lib_dir }}:/usr/local/lib:/usr/lib"
+# 从 .env 文件加载环境变量
+EnvironmentFile={{ peggo_home }}/.env
+# 使用绝对路径执行命令
+ExecStart={{ binary_dir }}/peggo orchestrator
+# 注意：私钥文件将在 orchestrator 注册完成后统一删除
+TimeoutStartSec=90
+# 禁用自动重启：Oracle 循环会因为新链没有 previous claim 而崩溃
+# 但 Signer 循环会在崩溃前完成 Valset 签名，这对测试网已经足够
+# 如需持续运行，请修复 Oracle 循环的 previous claim 问题
+Restart=no
+# RestartSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=peggo
+
+# 安全设置（放宽限制以避免依赖问题）
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=false
+ProtectHome=false
+
+# 资源限制
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+

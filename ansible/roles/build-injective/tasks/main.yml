@@ -1,0 +1,407 @@
+---
+# 从 GitHub 编译 Injective v1.17.0
+
+- name: 显示编译信息
+  debug:
+    msg: |
+      ==========================================
+      开始编译 Injective
+      ==========================================
+      - 仓库: {{ injective_repo_url }}
+      - 版本: {{ injective_version }}
+      - 编译目录: {{ injective_build_dir }}
+      - 输出目录: {{ injective_binary_output_dir }}
+      ==========================================
+
+- name: 检查必要的系统工具
+  block:
+    - name: 检查 Git 是否安装
+      command: git --version
+      register: git_check
+      changed_when: false
+      failed_when: false
+    
+    - name: 检查 Go 是否安装
+      command: go version
+      register: go_check
+      changed_when: false
+      failed_when: false
+    
+    - name: 验证 Git 已安装
+      fail:
+        msg: "Git 未安装，请先安装 Git: sudo apt-get install git"
+      when: git_check.rc != 0
+    
+    - name: 验证 Go 已安装
+      fail:
+        msg: "Go 未安装，请先安装 Go 1.23+"
+      when: go_check.rc != 0
+    
+    - name: 显示工具版本信息
+      debug:
+        msg: |
+          Git 版本: {{ git_check.stdout }}
+          Go 版本: {{ go_check.stdout }}
+
+- name: 检查构建依赖是否已安装
+  block:
+    - name: 检查构建工具是否已安装
+      command: which gcc make cmake pkg-config
+      register: build_tools_check
+      changed_when: false
+      failed_when: false
+    
+    - name: 显示构建依赖状态
+      debug:
+        msg: |
+          构建依赖检查:
+          - gcc: {{ '已安装' if build_tools_check.rc == 0 else '未安装' }}
+          - make: {{ '已安装' if build_tools_check.rc == 0 else '未安装' }}
+          - cmake: {{ '已安装' if build_tools_check.rc == 0 else '未安装' }}
+          - pkg-config: {{ '已安装' if build_tools_check.rc == 0 else '未安装' }}
+          {% if build_tools_check.rc != 0 %}
+          警告: 构建工具未安装，编译可能会失败
+          请手动安装: sudo apt-get install build-essential gcc g++ make cmake libssl-dev pkg-config
+          {% endif %}
+
+- name: 创建编译目录
+  file:
+    path: "{{ injective_build_dir }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0755'
+
+- name: 创建输出目录
+  file:
+    path: "{{ injective_binary_output_dir }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0755'
+
+- name: 检查是否已克隆仓库
+  stat:
+    path: "{{ injective_build_dir }}/.git"
+  register: repo_exists
+
+- name: 检查构建目录是否存在
+  stat:
+    path: "{{ injective_build_dir }}"
+  register: build_dir_exists
+
+- name: 清理旧的构建目录（如果存在且不是有效的 Git 仓库）
+  file:
+    path: "{{ injective_build_dir }}"
+    state: absent
+  when: 
+    - build_dir_exists.stat.exists
+    - not repo_exists.stat.exists
+
+- name: 克隆或更新 Injective 仓库
+  block:
+    - name: 克隆 Injective 仓库
+      git:
+        repo: "{{ injective_repo_url }}"
+        dest: "{{ injective_build_dir }}"
+        version: "{{ injective_version }}"
+        depth: 1
+        update: yes
+        force: yes
+      when: not repo_exists.stat.exists
+    
+    - name: 更新到指定版本
+      git:
+        repo: "{{ injective_repo_url }}"
+        dest: "{{ injective_build_dir }}"
+        version: "{{ injective_version }}"
+        update: yes
+        force: yes
+      when: repo_exists.stat.exists
+
+- name: 显示当前代码版本
+  command: git describe --tags --always
+  args:
+    chdir: "{{ injective_build_dir }}"
+  register: current_version
+  changed_when: false
+
+- name: 显示版本信息
+  debug:
+    msg: |
+      当前代码版本: {{ current_version.stdout }}
+      目标版本: {{ injective_version }}
+
+- name: 获取构建目录的绝对路径
+  shell: |
+    cd {{ injective_build_dir }}
+    pwd
+  register: build_dir_abs_path
+  changed_when: false
+
+- name: 获取 Go 缓存目录的绝对路径
+  shell: |
+    mkdir -p {{ go_cache_dir | default(build_dir_abs_path.stdout + '/go') }}
+    cd {{ go_cache_dir | default(build_dir_abs_path.stdout + '/go') }}
+    pwd
+  register: go_cache_abs_path
+  changed_when: false
+  when: go_cache_dir is defined
+
+- name: 设置 Go 环境变量
+  set_fact:
+    go_env:
+      GOPATH: "{{ go_cache_abs_path.stdout if go_cache_dir is defined else build_dir_abs_path.stdout + '/go' }}"
+      GO111MODULE: "on"
+      CGO_ENABLED: "1"
+      GOMODCACHE: "{{ go_cache_abs_path.stdout if go_cache_dir is defined else build_dir_abs_path.stdout + '/go' }}/pkg/mod"
+
+- name: 创建 Go 工作目录
+  file:
+    path: "{{ go_env.GOPATH }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0755'
+
+- name: 下载或获取 WASM 库（如果编译过程不自动获取）
+  block:
+    - name: 检查是否已存在 WASM 库
+      find:
+        paths: "{{ injective_build_dir }}"
+        patterns: "libwasmvm*.so"
+        file_type: file
+        recurse: yes
+      register: existing_wasm_lib
+      failed_when: false
+    
+    - name: 显示 WASM 库获取说明
+      debug:
+        msg: |
+          ==========================================
+          WASM 库获取说明
+          ==========================================
+          libwasmvm 库通常由以下方式获取：
+          1. 编译过程中自动下载（如果 wasmvm Go 包支持）
+          2. 从 CosmWasm 官方下载预编译版本
+          3. 手动编译 wasmvm 库
+          
+          当前查找路径: {{ injective_build_dir }}
+          {% if existing_wasm_lib.files | length > 0 %}
+          已找到现有库: {{ existing_wasm_lib.files[0].path }}
+          {% else %}
+          未找到现有库，将在编译后查找
+          {% endif %}
+          ==========================================
+      when: existing_wasm_lib.files | length == 0
+
+- name: 编译 injectived
+  block:
+    - name: 检查仓库结构
+      stat:
+        path: "{{ injective_build_dir }}/injective-chain"
+      register: injective_chain_dir
+    
+    - name: 清理之前的编译产物
+      file:
+        path: "{{ injective_build_dir }}/build"
+        state: absent
+      ignore_errors: yes
+    
+    - name: 显示编译开始信息
+      debug:
+        msg: |
+          ==========================================
+          开始编译 injectived 和 peggo
+          ==========================================
+          编译目录: {{ injective_build_dir }}
+          GOPATH: {{ go_env.GOPATH }}
+          GOMODCACHE: {{ go_env.GOMODCACHE }}
+          注意: 编译过程可能需要较长时间，请耐心等待...
+          ==========================================
+    
+    - name: 设置编译日志文件路径
+      set_fact:
+        build_log_file: "{{ build_dir_abs_path.stdout }}/build.log"
+    
+    - name: 编译 injectived 和 peggo 二进制文件
+      shell: |
+        cd {{ injective_build_dir }}
+        # 使用 make install 同时编译 injectived 和 peggo
+        # 将输出同时显示到终端和日志文件
+        make install 2>&1 | tee {{ build_log_file }} || make install
+      environment:
+        GOPATH: "{{ go_env.GOPATH }}"
+        GOMODCACHE: "{{ go_env.GOMODCACHE }}"
+        GO111MODULE: "on"
+        CGO_ENABLED: "1"
+        HOME: "{{ deploy_user_home }}"
+        PATH: "{{ ansible_env.PATH }}"
+        LD_LIBRARY_PATH: "/usr/lib:{{ ansible_env.LD_LIBRARY_PATH | default('') }}"
+      register: build_result
+      changed_when: true
+      async: 7200  # 设置超时时间为 2 小时（编译可能需要很长时间）
+      poll: 10    # 每 10 秒检查一次状态，更频繁地检查进度
+      failed_when: build_result.rc != 0 and "Installed injectived and peggo" not in build_result.stdout
+    
+    - name: 显示编译输出（最后 50 行）
+      shell: tail -50 {{ build_log_file }} 2>/dev/null || echo "日志文件不存在或无法读取"
+      register: build_log_tail
+      changed_when: false
+      failed_when: false
+    
+    - name: 显示编译日志
+      debug:
+        msg: "{{ build_log_tail.stdout_lines }}"
+      when: build_log_tail.stdout_lines | length > 0
+    
+    - name: 查找编译后的 injectived 二进制文件
+      find:
+        paths:
+          - "{{ go_env.GOPATH }}/bin"
+          - "{{ ansible_env.HOME }}/go/bin"
+          - "/usr/local/go/bin"
+          - "{{ injective_build_dir }}"
+          - "{{ injective_build_dir }}/injective-chain"
+        patterns: "injectived"
+        file_type: file
+        recurse: yes
+      register: injectived_binary_files
+    
+    - name: 查找编译后的 peggo 二进制文件
+      find:
+        paths:
+          - "{{ go_env.GOPATH }}/bin"
+          - "{{ ansible_env.HOME }}/go/bin"
+          - "/usr/local/go/bin"
+          - "{{ injective_build_dir }}"
+          - "{{ injective_build_dir }}/peggo"
+        patterns: "peggo"
+        file_type: file
+        recurse: yes
+      register: peggo_binary_files
+    
+    - name: 显示找到的二进制文件
+      debug:
+        msg: |
+          找到的二进制文件:
+          injectived:
+          {% for file in injectived_binary_files.files %}
+          - {{ file.path }}
+          {% endfor %}
+          peggo:
+          {% for file in peggo_binary_files.files %}
+          - {{ file.path }}
+          {% endfor %}
+    
+    - name: 设置 injectived 二进制文件路径
+      set_fact:
+        injectived_binary_path: "{{ injectived_binary_files.files[0].path if injectived_binary_files.files | length > 0 else '' }}"
+    
+    - name: 设置 peggo 二进制文件路径
+      set_fact:
+        peggo_binary_path: "{{ peggo_binary_files.files[0].path if peggo_binary_files.files | length > 0 else '' }}"
+    
+    - name: 验证 injectived 编译成功
+      fail:
+        msg: "injectived 编译失败，未找到二进制文件。请检查编译日志。"
+      when: injectived_binary_path == ''
+    
+    - name: 复制 injectived 到输出目录
+      copy:
+        src: "{{ injectived_binary_path }}"
+        dest: "{{ injective_binary_output_dir }}/injectived"
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_group }}"
+        mode: '0755'
+        remote_src: yes
+    
+    - name: 复制 injectived 为 biyachaind（别名）
+      copy:
+        src: "{{ injective_binary_output_dir }}/injectived"
+        dest: "{{ injective_binary_output_dir }}/biyachaind"
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_group }}"
+        mode: '0755'
+        remote_src: yes
+    
+    - name: 复制 peggo 到输出目录（如果找到）
+      copy:
+        src: "{{ peggo_binary_path }}"
+        dest: "{{ injective_binary_output_dir }}/peggo"
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_group }}"
+        mode: '0755'
+        remote_src: yes
+      when: peggo_binary_path != ''
+
+- name: 查找 WASM 库文件（只复制 x86_64 架构）
+  block:
+    - name: 查找 libwasmvm.x86_64.so 库文件
+      find:
+        paths: "{{ injective_build_dir }}"
+        patterns: "libwasmvm.x86_64.so"
+        file_type: file
+        recurse: yes
+      register: wasm_lib_files
+    
+    - name: 显示找到的 WASM 库文件
+      debug:
+        msg: |
+          找到的 WASM 库文件（x86_64）:
+          {% for file in wasm_lib_files.files %}
+          - {{ file.path }}
+          {% endfor %}
+      when: wasm_lib_files.files | length > 0
+    
+    - name: 复制 WASM 库文件到输出目录（只复制 x86_64）
+      copy:
+        src: "{{ item.path }}"
+        dest: "{{ injective_binary_output_dir }}/libwasmvm.x86_64.so"
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_group }}"
+        mode: '0644'
+        remote_src: yes
+      loop: "{{ wasm_lib_files.files | default([]) }}"
+      when: wasm_lib_files.files | length > 0
+    
+    - name: 警告未找到 WASM 库
+      debug:
+        msg: |
+          警告: 未找到 libwasmvm 库文件
+          请确保编译过程中生成了 WASM 库文件
+          或者手动将 libwasmvm.x86_64.so 复制到 {{ injective_binary_output_dir }}
+      when: wasm_lib_files.files | length == 0
+
+- name: 验证编译产物
+  block:
+    - name: 检查 injectived 二进制文件
+      stat:
+        path: "{{ injective_binary_output_dir }}/injectived"
+      register: injectived_check
+    
+    - name: 检查 biyachaind 二进制文件
+      stat:
+        path: "{{ injective_binary_output_dir }}/biyachaind"
+      register: biyachaind_check
+    
+    - name: 获取 injectived 版本信息
+      command: "{{ injective_binary_output_dir }}/injectived version"
+      register: injectived_version
+      changed_when: false
+      failed_when: false
+    
+    - name: 显示编译结果
+      debug:
+        msg: |
+          ==========================================
+          编译完成！
+          ==========================================
+          - injectived: {{ '✓' if injectived_check.stat.exists else '✗' }}
+          - biyachaind: {{ '✓' if biyachaind_check.stat.exists else '✗' }}
+          {% if injectived_version.rc == 0 %}
+          - 版本信息: {{ injectived_version.stdout }}
+          {% endif %}
+          - 输出目录: {{ injective_binary_output_dir }}
+          ==========================================
+

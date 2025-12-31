@@ -1,0 +1,281 @@
+---
+# ==========================================
+# 检查和准备本地编译环境
+# ==========================================
+# 功能：
+#   1. 检查必要工具（Git, Go, curl, jq, make, gcc）
+#   2. 验证 Go 版本
+#   3. 自动安装缺失的工具
+# 用法：
+#   ansible-playbook playbook-check-build-env.yml
+# ==========================================
+
+- name: 检查本地编译环境
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  become: no
+  
+  vars:
+    go_required_version: "{{ go_required_version | default('1.23.8') }}"
+    go_min_version: "{{ go_min_version | default('1.23.1') }}"
+  
+  tasks:
+    - name: 显示环境检查信息
+      debug:
+        msg: |
+          ==========================================
+          检查本地编译环境
+          ==========================================
+          要求的 Go 版本: >= {{ go_min_version }}
+          ==========================================
+    
+    # ========================================
+    # 检查 Git
+    # ========================================
+    - name: 检查 Git 是否安装
+      command: which git
+      register: git_check
+      failed_when: false
+      changed_when: false
+    
+    - name: 显示 Git 状态
+      debug:
+        msg: "{{ '✓ Git 已安装' if git_check.rc == 0 else '✗ Git 未安装' }}"
+    
+    - name: 安装 Git
+      apt:
+        name: git
+        state: present
+        update_cache: yes
+      become: yes
+      when:
+        - git_check.rc != 0
+        - ansible_os_family == 'Debian'
+    
+    # ========================================
+    # 检查 Go
+    # ========================================
+    - name: 检查 Go 是否安装
+      command: which go
+      register: go_check
+      failed_when: false
+      changed_when: false
+    
+    - name: 获取 Go 版本
+      shell: go version | awk '{print $3}' | sed 's/go//'
+      register: go_version_output
+      when: go_check.rc == 0
+      changed_when: false
+    
+    - name: 解析 Go 版本
+      set_fact:
+        go_version: "{{ go_version_output.stdout }}"
+        go_major: "{{ go_version_output.stdout.split('.')[0] }}"
+        go_minor: "{{ go_version_output.stdout.split('.')[1] }}"
+        go_patch: "{{ go_version_output.stdout.split('.')[2] | default('0') }}"
+      when: go_check.rc == 0
+    
+    - name: 解析最低 Go 版本要求
+      set_fact:
+        min_major: "{{ go_min_version.split('.')[0] }}"
+        min_minor: "{{ go_min_version.split('.')[1] }}"
+        min_patch: "{{ go_min_version.split('.')[2] | default('0') }}"
+    
+    - name: 检查 Go 版本是否满足要求
+      set_fact:
+        go_version_ok: >-
+          {{
+            (go_major | int > min_major | int) or
+            (go_major | int == min_major | int and go_minor | int > min_minor | int) or
+            (go_major | int == min_major | int and go_minor | int == min_minor | int and go_patch | int >= min_patch | int)
+          }}
+      when: go_check.rc == 0
+    
+    - name: 显示 Go 状态
+      debug:
+        msg: |
+          {% if go_check.rc == 0 %}
+          {% if go_version_ok %}
+          ✓ Go {{ go_version }} (满足要求 >= {{ go_min_version }})
+          {% else %}
+          ✗ Go {{ go_version }} 版本过低 (要求 >= {{ go_min_version }})
+          {% endif %}
+          {% else %}
+          ✗ Go 未安装
+          {% endif %}
+    
+    - name: 下载并安装 Go
+      block:
+        - name: 创建临时目录
+          tempfile:
+            state: directory
+            suffix: _go_install
+          register: go_temp_dir
+        
+        - name: 下载 Go
+          get_url:
+            url: "https://go.dev/dl/go{{ go_required_version }}.linux-amd64.tar.gz"
+            dest: "{{ go_temp_dir.path }}/go.tar.gz"
+            timeout: 300
+        
+        - name: 删除旧的 Go 安装
+          file:
+            path: /usr/local/go
+            state: absent
+          become: yes
+        
+        - name: 解压 Go
+          unarchive:
+            src: "{{ go_temp_dir.path }}/go.tar.gz"
+            dest: /usr/local
+            remote_src: yes
+          become: yes
+        
+        - name: 添加 Go 到 PATH（当前会话）
+          set_fact:
+            ansible_env: "{{ ansible_env | combine({'PATH': '/usr/local/go/bin:' + ansible_env.PATH}) }}"
+        
+        - name: 添加 Go 到 PATH（永久）
+          lineinfile:
+            path: "{{ ansible_env.HOME }}/.bashrc"
+            line: 'export PATH=/usr/local/go/bin:$PATH'
+            state: present
+            create: yes
+        
+        - name: 清理临时文件
+          file:
+            path: "{{ go_temp_dir.path }}"
+            state: absent
+        
+        - name: 验证 Go 安装
+          command: /usr/local/go/bin/go version
+          register: go_install_verify
+          changed_when: false
+        
+        - name: 显示安装结果
+          debug:
+            msg: "✓ Go {{ go_required_version }} 安装成功"
+      
+      when: go_check.rc != 0 or not (go_version_ok | default(false))
+    
+    # ========================================
+    # 检查其他工具
+    # ========================================
+    - name: 检查 curl
+      command: which curl
+      register: curl_check
+      failed_when: false
+      changed_when: false
+    
+    - name: 显示 curl 状态
+      debug:
+        msg: "{{ '✓ curl 已安装' if curl_check.rc == 0 else '✗ curl 未安装' }}"
+    
+    - name: 安装 curl
+      apt:
+        name: curl
+        state: present
+      become: yes
+      when:
+        - curl_check.rc != 0
+        - ansible_os_family == 'Debian'
+    
+    - name: 检查 jq
+      command: which jq
+      register: jq_check
+      failed_when: false
+      changed_when: false
+    
+    - name: 显示 jq 状态
+      debug:
+        msg: "{{ '✓ jq 已安装' if jq_check.rc == 0 else '✗ jq 未安装' }}"
+    
+    - name: 安装 jq
+      apt:
+        name: jq
+        state: present
+      become: yes
+      when:
+        - jq_check.rc != 0
+        - ansible_os_family == 'Debian'
+    
+    - name: 检查 make
+      command: which make
+      register: make_check
+      failed_when: false
+      changed_when: false
+    
+    - name: 显示 make 状态
+      debug:
+        msg: "{{ '✓ make 已安装' if make_check.rc == 0 else '✗ make 未安装' }}"
+    
+    - name: 安装 make
+      apt:
+        name: make
+        state: present
+      become: yes
+      when:
+        - make_check.rc != 0
+        - ansible_os_family == 'Debian'
+    
+    - name: 检查 gcc
+      command: which gcc
+      register: gcc_check
+      failed_when: false
+      changed_when: false
+    
+    - name: 显示 gcc 状态
+      debug:
+        msg: "{{ '✓ gcc 已安装' if gcc_check.rc == 0 else '✗ gcc 未安装' }}"
+    
+    - name: 安装 build-essential
+      apt:
+        name: build-essential
+        state: present
+      become: yes
+      when:
+        - gcc_check.rc != 0
+        - ansible_os_family == 'Debian'
+    
+    # ========================================
+    # 最终检查
+    # ========================================
+    - name: 收集所有检查结果
+      set_fact:
+        all_checks_passed: >-
+          {{
+            git_check.rc == 0 and
+            go_check.rc == 0 and
+            (go_version_ok | default(false)) and
+            curl_check.rc == 0 and
+            jq_check.rc == 0 and
+            make_check.rc == 0 and
+            gcc_check.rc == 0
+          }}
+    
+    - name: 显示最终结果
+      debug:
+        msg: |
+          ==========================================
+          环境检查结果
+          ==========================================
+          Git:     {{ '✓' if git_check.rc == 0 else '✗' }}
+          Go:      {{ '✓ ' + go_version if go_check.rc == 0 and (go_version_ok | default(false)) else '✗' }}
+          curl:    {{ '✓' if curl_check.rc == 0 else '✗' }}
+          jq:      {{ '✓' if jq_check.rc == 0 else '✗' }}
+          make:    {{ '✓' if make_check.rc == 0 else '✗' }}
+          gcc:     {{ '✓' if gcc_check.rc == 0 else '✗' }}
+          ==========================================
+          {% if all_checks_passed %}
+          ✓ 所有检查通过，可以开始编译
+          {% else %}
+          ✗ 部分检查未通过（缺失的工具已自动安装）
+          {% endif %}
+          ==========================================
+    
+    - name: 环境检查失败
+      fail:
+        msg: "环境检查未通过，请安装缺失的工具"
+      when: not all_checks_passed
+

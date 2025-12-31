@@ -1,0 +1,169 @@
+---
+# ==========================================
+# 任务模块：密钥管理
+# ==========================================
+# 功能：
+#   1. 同步节点密钥文件
+#   2. 设置严格的文件权限
+#   3. 验证密钥文件格式
+# 安全性：
+#   - 使用 no_log 隐藏敏感输出
+#   - 设置 0600 权限（仅所有者可读写）
+#   - 密钥文件仅在必要时复制
+# ==========================================
+
+- name: 设置密钥文件源路径
+  set_fact:
+    keys_source_dir: "{{ local_config_dir }}/{{ node_type }}-{{ node_index }}"
+  tags: ['keys']
+
+- name: 显示密钥同步信息
+  debug:
+    msg: |
+      开始同步密钥文件
+      - 节点类型: {{ node_type }}
+      - 源目录: {{ keys_source_dir }}
+      - 需要同步: {{ 'node_key.json + priv_validator_key.json' if node_type == 'validator' else 'node_key.json' }}
+  tags: ['keys']
+
+# ------------------------------------------
+# 节点 P2P 密钥（所有节点）
+# ------------------------------------------
+- name: 复制 node_key.json 到目标服务器
+  copy:
+    src: "{{ keys_source_dir }}/config/node_key.json"
+    dest: "{{ node_home_base }}/config/node_key.json"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: "{{ private_key_mode | default('0600') }}"
+  no_log: true
+  tags: ['keys', 'node_key']
+
+- name: 验证 node_key.json 格式
+  shell: |
+    if ! jq -e '.priv_key.type' {{ node_home_base }}/config/node_key.json > /dev/null 2>&1; then
+      echo "ERROR: Invalid node_key.json format"
+      exit 1
+    fi
+    echo "OK"
+  register: node_key_validation
+  changed_when: false
+  no_log: true
+  tags: ['keys', 'verify']
+
+- name: 显示 node_key.json 验证结果
+  debug:
+    msg: "node_key.json 格式验证: {{ 'PASS' if node_key_validation.stdout == 'OK' else 'FAIL' }}"
+  tags: ['keys', 'verify']
+
+# ------------------------------------------
+# 验证者共识密钥（仅 validator 节点）
+# ------------------------------------------
+- name: 复制 priv_validator_key.json 到目标服务器 (仅限 validator)
+  copy:
+    src: "{{ keys_source_dir }}/config/priv_validator_key.json"
+    dest: "{{ node_home_base }}/config/priv_validator_key.json"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: "{{ private_key_mode | default('0600') }}"
+  when: node_type == 'validator'
+  no_log: true
+  tags: ['keys', 'validator_key']
+
+- name: 验证 priv_validator_key.json 格式 (仅限 validator)
+  shell: |
+    if ! jq -e '.address' {{ node_home_base }}/config/priv_validator_key.json > /dev/null 2>&1; then
+      echo "ERROR: Invalid priv_validator_key.json format"
+      exit 1
+    fi
+    echo "OK"
+  register: priv_validator_key_validation
+  changed_when: false
+  when: node_type == 'validator'
+  no_log: true
+  tags: ['keys', 'verify']
+
+- name: 显示 priv_validator_key.json 验证结果
+  debug:
+    msg: "priv_validator_key.json 格式验证: {{ 'PASS' if priv_validator_key_validation.stdout == 'OK' else 'N/A' }}"
+  when: node_type == 'validator'
+  tags: ['keys', 'verify']
+
+# ------------------------------------------
+# Peggo 密钥（仅 validator 节点）
+# ------------------------------------------
+- name: 检查 peggo_key.json 是否存在 (本地)
+  stat:
+    path: "{{ keys_source_dir }}/config/peggo_key.json"
+  register: peggo_key_local
+  delegate_to: localhost
+  when: node_type == 'validator'
+  tags: ['keys', 'peggo_key']
+
+- name: 复制 peggo_key.json 到目标服务器 (仅限 validator)
+  copy:
+    src: "{{ keys_source_dir }}/config/peggo_key.json"
+    dest: "{{ node_home_base }}/config/peggo_key.json"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: "{{ private_key_mode | default('0600') }}"
+  when: 
+    - node_type == 'validator'
+    - peggo_key_local.stat.exists
+  no_log: true
+  tags: ['keys', 'peggo_key']
+
+- name: 验证 peggo_key.json 格式 (仅限 validator)
+  shell: |
+    if ! jq -e '.cosmos_private_key' {{ node_home_base }}/config/peggo_key.json > /dev/null 2>&1; then
+      echo "ERROR: Invalid peggo_key.json format"
+      exit 1
+    fi
+    echo "OK"
+  register: peggo_key_validation
+  changed_when: false
+  when: 
+    - node_type == 'validator'
+    - peggo_key_local.stat.exists
+  no_log: true
+  tags: ['keys', 'verify']
+
+- name: 显示 peggo_key.json 验证结果
+  debug:
+    msg: "peggo_key.json 格式验证: {{ 'PASS' if (peggo_key_validation.stdout | default('')) == 'OK' else 'N/A' }}"
+  when: node_type == 'validator'
+  tags: ['keys', 'verify']
+
+# ------------------------------------------
+# 最终权限检查
+# ------------------------------------------
+- name: 验证密钥文件权限设置
+  stat:
+    path: "{{ node_home_base }}/config/{{ item }}"
+  loop:
+    - "node_key.json"
+    - "priv_validator_key.json"
+  register: key_permissions_check
+  when: node_type == 'validator' or item == 'node_key.json'
+  tags: ['keys', 'verify']
+
+- name: 确认密钥文件权限正确
+  debug:
+    msg: |
+      密钥文件权限检查:
+      {% for item in key_permissions_check.results %}
+      {% if not item.skipped | default(false) %}
+      - {{ item.item }}: {{ item.stat.mode }} (期望: 0600)
+      {% endif %}
+      {% endfor %}
+  tags: ['keys', 'verify']
+
+- name: 显示密钥同步完成
+  debug:
+    msg: |
+      ✓ 密钥文件同步完成
+      - 所有密钥已复制到目标服务器
+      - 文件权限已设置为 0600
+      - 格式验证通过
+  tags: ['keys']
+

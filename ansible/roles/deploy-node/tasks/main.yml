@@ -1,0 +1,163 @@
+---
+# ==========================================
+# deploy-node 角色主任务文件（优化版）
+# ==========================================
+# 功能：部署 biyachaind 节点到目标服务器
+# 
+# 使用方式：
+#   ansible-playbook -i inventory.yml playbook-full.yml \
+#     --tags deploy_node \
+#     --limit validator-0
+#
+# 必需变量：
+#   - node_type: 节点类型 (validator/sentry)
+#   - node_index: 节点索引 (0,1,2...)
+#   - local_config_dir: 本地配置目录路径
+#   - local_binary_tar: 本地二进制包路径
+#
+# Tags 说明：
+#   - prepare: 环境准备
+#   - binary: 二进制文件部署
+#   - config: 配置文件部署
+#   - keys: 密钥文件同步
+#   - service: 服务启动
+#   - cleanup: 清理临时文件
+#   - verify: 验证步骤
+#
+# 安全特性：
+#   - 所有密钥操作使用 no_log
+#   - 文件权限严格控制
+#   - 支持 Ansible Vault
+#
+# 性能优化：
+#   - 异步文件上传
+#   - 智能重试机制
+#   - 并行任务执行
+#
+# 维护者：DevOps Team
+# 更新时间：2025-12-16
+# ==========================================
+
+# ------------------------------------------
+# 阶段 1: 环境准备
+# ------------------------------------------
+- name: "【阶段 1/6】环境准备"
+  debug:
+    msg: "开始环境准备阶段..."
+  tags: ['always']
+
+- name: 执行环境准备任务
+  include_tasks: 01_prepare.yml
+
+# ------------------------------------------
+# 阶段 2: 二进制文件部署（Cosmovisor）
+# ------------------------------------------
+- name: "【阶段 2/6】二进制文件部署（Cosmovisor）"
+  debug:
+    msg: "开始部署二进制文件（使用 Cosmovisor）..."
+  tags: ['always']
+
+- name: 执行 Cosmovisor 二进制文件部署任务
+  include_tasks: 02_binary.yml
+
+# ------------------------------------------
+# 阶段 3: 配置文件部署
+# ------------------------------------------
+- name: "【阶段 3/6】配置文件部署"
+  debug:
+    msg: "开始部署配置文件..."
+  tags: ['always']
+
+- name: 执行配置文件部署任务
+  include_tasks: 03_config.yml
+
+- name: 执行配置文件参数调优（可选）
+  include_tasks: 03a_tune_config.yml
+  when: 
+    - timeout_commit is defined or
+      minimum_gas_prices is defined or
+      pruning is defined or
+      min_retain_blocks is defined or
+      log_level is defined
+
+- name: 执行 P2P 连接配置
+  include_tasks: 03b_configure_peers.yml
+
+# ------------------------------------------
+# 阶段 4: 密钥文件同步
+# ------------------------------------------
+- name: "【阶段 4/6】密钥文件同步"
+  debug:
+    msg: "开始同步密钥文件..."
+  tags: ['always']
+
+- name: 执行密钥同步任务
+  include_tasks: 04_keys.yml
+
+# ------------------------------------------
+# 阶段 5: 系统服务配置（Cosmovisor）
+# ------------------------------------------
+- name: "【阶段 5/6】系统服务配置（Cosmovisor）"
+  debug:
+    msg: "开始配置系统服务（使用 Cosmovisor）..."
+  tags: ['always']
+
+- name: 执行 Cosmovisor 服务配置任务
+  include_tasks: 05_service.yml
+
+# ------------------------------------------
+# 阶段 6: 清理临时文件
+# ------------------------------------------
+- name: "【阶段 6/6】清理临时文件"
+  debug:
+    msg: "开始清理临时文件..."
+  tags: ['always']
+
+- name: 执行清理任务
+  include_tasks: 06_cleanup.yml
+
+# ------------------------------------------
+# 部署完成摘要
+# ------------------------------------------
+- name: 显示部署完成摘要
+  debug:
+    msg: |
+      ==========================================
+      ✓ 节点部署成功完成！
+      ==========================================
+      节点信息:
+        - 节点名称: {{ node_type }}-{{ node_index }}
+        - 服务器: {{ ansible_host | default(inventory_hostname) }}
+        - 节点类型: {{ node_type }}
+      
+      服务管理:
+        - 服务名称: {{ node_service_name }}
+        - 查看状态: sudo systemctl status {{ node_service_name }}
+        - 查看日志: sudo journalctl -u {{ node_service_name }} -f
+        - 重启服务: sudo systemctl restart {{ node_service_name }}
+      
+      关键路径:
+        - 数据目录: {{ node_home_base }}
+        - 配置目录: {{ node_home_base }}/config
+        - 二进制文件: {{ binary_dir }}/{{ node_service_name }}d
+      
+      Cosmovisor 配置:
+        - Genesis 二进制: {{ node_home_base }}/cosmovisor/genesis/bin/biyachaind
+        - 升级目录: {{ node_home_base }}/cosmovisor/upgrades
+        - 当前版本: {{ node_home_base }}/cosmovisor/current
+      
+      下一步:
+        {% if node_type == 'validator' %}
+        1. 使用 ansible/node-control.sh 管理节点
+        2. 如需部署 Peggo，运行: deploy-node.sh --peggo
+        3. 查看节点状态: ./node-control.sh status {{ node_type }}-{{ node_index }}
+        4. 升级节点: ./upgrade-node.sh --name v1.14.0 --binary ./build/bin/biyachaind
+        {% else %}
+        1. 使用 ansible/node-control.sh 管理节点
+        2. 查看节点状态: ./node-control.sh status {{ node_type }}-{{ node_index }}
+        3. 验证与 validator 节点的连接
+        4. 升级节点: ./upgrade-node.sh --name v1.14.0 --binary ./build/bin/biyachaind
+        {% endif %}
+      ==========================================
+  tags: ['always']
+

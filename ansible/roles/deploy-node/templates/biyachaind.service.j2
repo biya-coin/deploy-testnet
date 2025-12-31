@@ -1,0 +1,60 @@
+[Unit]
+Description=Biya Chain Daemon managed by Cosmovisor - {{ node_type }} node {{ node_index }}
+After=network-online.target
+Wants=network-online.target
+DefaultDependencies=no
+
+[Service]
+Type=simple
+User={{ deploy_user }}
+WorkingDirectory={{ node_home_base }}
+
+# Cosmovisor 环境变量
+Environment="DAEMON_NAME=biyachaind"
+Environment="DAEMON_HOME={{ node_home_base }}"
+Environment="DAEMON_ALLOW_DOWNLOAD_BINARIES=true"
+Environment="DAEMON_RESTART_AFTER_UPGRADE=true"
+Environment="DAEMON_DOWNLOAD_TIMEOUT=300"
+Environment="UNSAFE_SKIP_BACKUP=true"
+Environment="DAEMON_DATA_BACKUP_DIR={{ node_home_base }}/data-backup"
+
+# 系统环境变量
+Environment="HOME={{ node_home_base }}"
+Environment="PATH={{ gopath }}/bin:{{ binary_dir }}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="LD_LIBRARY_PATH={{ node_home_base }}/cosmovisor/current/bin:/usr/local/lib:/usr/lib"
+
+# 启动命令（在启动前检查并重命名 injectived -> biyachaind）
+ExecStart=/bin/bash -c '\
+  UPGRADE_DIR="{{ node_home_base }}/cosmovisor/upgrades"; \
+  if [ -d "$UPGRADE_DIR" ]; then \
+    for upgrade in "$UPGRADE_DIR"/*; do \
+      if [ -f "$upgrade/bin/injectived" ] && [ ! -f "$upgrade/bin/biyachaind" ]; then \
+        echo "检测到 injectived，重命名为 biyachaind: $upgrade"; \
+        cp "$upgrade/bin/injectived" "$upgrade/bin/biyachaind"; \
+        chmod +x "$upgrade/bin/biyachaind"; \
+      fi; \
+    done; \
+  fi; \
+  exec {{ gopath }}/bin/cosmovisor run start --home={{ node_home_base }}'
+
+# 重启策略
+Restart=always
+RestartSec=3
+
+# 日志
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=biyachaind
+
+# 安全设置
+NoNewPrivileges=true
+PrivateTmp=false
+ProtectSystem=false
+ProtectHome=false
+
+# 资源限制
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+

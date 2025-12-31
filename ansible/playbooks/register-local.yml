@@ -1,0 +1,24 @@
+---
+# 本地注册 Orchestrator 地址
+# 用法: ansible-playbook -i inventory.yml playbooks/register-local.yml -e node_rpc=http://10.8.21.50:26757
+
+- name: 本地注册 Orchestrator
+  hosts: localhost
+  gather_facts: no
+  
+  vars:
+    local_config_dir: "{{ playbook_dir | dirname }}/chain-deploy-config"
+    binary_dir: "{{ playbook_dir | dirname }}/build/bin"
+    chain_id: "{{ peggo_cosmos_chain_id | default('biyachain-888') }}"
+    gas_prices: "1600000000inj"
+  
+  tasks:
+    - name: 检查 node_rpc 参数
+      fail:
+        msg: "请提供 node_rpc 参数，例如: -e node_rpc=http://10.8.21.50:26757"
+      when: node_rpc is not defined
+    
+    - name: 执行注册
+      include_role:
+        name: register-orchestrator-local
+

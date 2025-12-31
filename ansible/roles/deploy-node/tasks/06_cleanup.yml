@@ -1,0 +1,108 @@
+---
+# ==========================================
+# 任务模块：清理临时文件
+# ==========================================
+# 功能：
+#   1. 删除临时部署文件
+#   2. 清理本地配置包
+#   3. 验证必要文件未被删除
+# 安全性：
+#   - 仅删除临时文件
+#   - 保留所有配置和密钥文件
+# ==========================================
+
+- name: 显示清理信息
+  debug:
+    msg: |
+      开始清理临时文件
+      - 远程临时目录: {{ deploy_temp_dir }}
+      - 本地配置包: {{ local_config_dir }}/{{ node_type }}-{{ node_index }}-config.tar.gz
+  tags: ['cleanup']
+
+# ------------------------------------------
+# 远程服务器清理
+# ------------------------------------------
+- name: 列出临时目录内容（调试用）
+  find:
+    paths: "{{ deploy_temp_dir }}"
+    file_type: any
+  register: temp_files
+  tags: ['cleanup', 'debug']
+
+- name: 显示将要清理的文件
+  debug:
+    msg: |
+      临时目录包含 {{ temp_files.matched }} 个文件/目录
+      {% for file in temp_files.files[:5] %}
+      - {{ file.path }}
+      {% endfor %}
+      {% if temp_files.matched > 5 %}
+      - ... (还有 {{ temp_files.matched - 5 }} 个文件)
+      {% endif %}
+  tags: ['cleanup', 'debug']
+
+- name: 清理远程临时文件
+  file:
+    path: "{{ deploy_temp_dir }}"
+    state: absent
+  tags: ['cleanup', 'remote']
+
+- name: 显示远程清理完成
+  debug:
+    msg: "远程临时文件已清理: {{ deploy_temp_dir }}"
+  tags: ['cleanup', 'remote']
+
+# ------------------------------------------
+# 本地控制节点清理
+# ------------------------------------------
+- name: 清理本地配置文件压缩包
+  file:
+    path: "{{ local_config_dir }}/{{ node_type }}-{{ node_index }}-config.tar.gz"
+    state: absent
+  delegate_to: localhost
+  run_once: true
+  tags: ['cleanup', 'local']
+
+- name: 显示本地清理完成
+  debug:
+    msg: "本地配置包已清理: {{ local_config_dir }}/{{ node_type }}-{{ node_index }}-config.tar.gz"
+  tags: ['cleanup', 'local']
+
+# ------------------------------------------
+# 验证必要文件完整性
+# ------------------------------------------
+- name: 验证关键文件未被删除
+  stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ node_home_base }}/config/genesis.json"
+    - "{{ node_home_base }}/config/config.toml"
+    - "{{ node_home_base }}/config/node_key.json"
+    - "{{ binary_dir }}/biyachaind"
+  register: essential_files_check
+  tags: ['cleanup', 'verify']
+
+- name: 检查文件完整性
+  fail:
+    msg: "错误：关键文件被误删: {{ item.item }}"
+  when: not item.stat.exists
+  loop: "{{ essential_files_check.results }}"
+  tags: ['cleanup', 'verify']
+
+- name: 显示文件完整性验证通过
+  debug:
+    msg: |
+      ✓ 文件完整性验证通过
+      - 所有关键文件都存在
+      - 临时文件已清理
+  tags: ['cleanup', 'verify']
+
+- name: 显示清理完成
+  debug:
+    msg: |
+      ✓ 清理任务完成
+      - 远程临时文件: 已删除
+      - 本地配置包: 已删除
+      - 关键文件: 完整
+  tags: ['cleanup']
+

@@ -1,0 +1,134 @@
+---
+# Ansible Playbook - 本地编译 Injective v1.17.0
+# 在本地编译完成后，生成可执行文件供打包使用
+
+- name: 本地编译 Injective
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  become: no  # 不使用 sudo，使用当前普通用户编译
+  tags:
+    - build
+    - always
+  
+  vars:
+    injective_repo_url: "{{ injective_repo_url | default('https://github.com/InjectiveLabs/injective-core.git') }}"
+    injective_version: "{{ injective_version | default('v1.17.0') }}"
+    injective_build_dir: "{{ injective_build_dir | default('../build') }}"
+    injective_binary_output_dir: "{{ injective_binary_output_dir | default('../build/output') }}"
+    libwasmvm_download_url: "{{ libwasmvm_download_url | default('') }}"
+    libwasmvm_version: "{{ libwasmvm_version | default('v2.1.5') }}"
+    cosmovisor_version: "{{ cosmovisor_version | default('v1.5.0') }}"
+    deploy_user: "{{ ansible_user | default(ansible_env.USER) }}"
+    deploy_group: "{{ ansible_user | default(ansible_env.USER) }}"
+    deploy_user_home: "{{ ansible_env.HOME }}"
+  
+  pre_tasks:
+    - name: 显示编译信息
+      debug:
+        msg: |
+          ==========================================
+          本地编译 Injective
+          ==========================================
+          仓库: {{ injective_repo_url }}
+          版本: {{ injective_version }}
+          编译目录: {{ injective_build_dir }}
+          输出目录: {{ injective_binary_output_dir }}
+          WASM 库: {{ libwasmvm_version }}
+          Cosmovisor: {{ cosmovisor_version }}
+          ==========================================
+    
+    - name: 下载 WASM 库
+      block:
+        - name: 显示 WASM 下载信息
+          debug:
+            msg: |
+              ==========================================
+              下载 WASM 库
+              ==========================================
+              版本: {{ libwasmvm_version }}
+              URL: {{ libwasmvm_download_url }}
+              目标: {{ injective_binary_output_dir }}/libwasmvm.x86_64.so
+              ==========================================
+        
+        - name: 创建输出目录
+          file:
+            path: "{{ injective_binary_output_dir }}"
+            state: directory
+            mode: '0755'
+        
+        - name: 下载 libwasmvm.x86_64.so
+          get_url:
+            url: "{{ libwasmvm_download_url }}"
+            dest: "{{ injective_binary_output_dir }}/libwasmvm.x86_64.so"
+            mode: '0644'
+            timeout: 300
+            force: yes  # 总是下载，覆盖已存在的文件
+          register: wasmvm_download
+        
+        - name: 显示下载结果
+          debug:
+            msg: "✓ WASM 库下载完成"
+          when: wasmvm_download is succeeded
+      
+      when: libwasmvm_download_url != ''
+    
+    - name: 编译 Cosmovisor
+      block:
+        - name: 显示 Cosmovisor 编译信息
+          debug:
+            msg: |
+              ==========================================
+              编译 Cosmovisor
+              ==========================================
+              版本: {{ cosmovisor_version }}
+              目标: {{ injective_binary_output_dir }}/cosmovisor
+              ==========================================
+        
+        - name: 检查 Cosmovisor 是否已存在
+          stat:
+            path: "{{ injective_binary_output_dir }}/cosmovisor"
+          register: cosmovisor_exists
+        
+        - name: 编译 Cosmovisor
+          shell: |
+            go install cosmossdk.io/tools/cosmovisor/cmd/cosmovisor@{{ cosmovisor_version }}
+            cp $(go env GOPATH)/bin/cosmovisor {{ injective_binary_output_dir }}/cosmovisor
+            chmod +x {{ injective_binary_output_dir }}/cosmovisor
+          when: not cosmovisor_exists.stat.exists
+          register: cosmovisor_build
+        
+        - name: 显示编译结果
+          debug:
+            msg: "{{ '✓ Cosmovisor 已存在，跳过编译' if cosmovisor_exists.stat.exists else '✓ Cosmovisor 编译完成' }}"
+  
+  roles:
+    - role: build-injective
+  
+  post_tasks:
+    - name: 检查编译产物
+      stat:
+        path: "{{ injective_binary_output_dir }}/{{ item }}"
+      loop:
+        - injectived
+        - biyachaind
+        - peggo
+        - cosmovisor
+        - libwasmvm.x86_64.so
+      register: build_artifacts
+    
+    - name: 显示编译完成信息
+      debug:
+        msg: |
+          ==========================================
+          本地编译完成！
+          ==========================================
+          二进制文件位置: {{ injective_binary_output_dir }}
+          {% for result in build_artifacts.results %}
+          - {{ result.item }}: {{ '✓' if result.stat.exists else '✗' }}
+          {% endfor %}
+          ==========================================
+          提示: Cosmovisor 由 build.sh 编译
+          下一步: 打包并部署
+          ==========================================
+

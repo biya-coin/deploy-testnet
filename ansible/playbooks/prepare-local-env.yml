@@ -1,0 +1,96 @@
+---
+# Ansible Playbook - 准备本地环境
+# 功能：检查并安装生成配置所需的依赖
+
+- name: 准备本地环境 - 安装依赖
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  
+  tasks:
+    - name: 显示准备信息
+      debug:
+        msg: |
+          ==========================================
+          准备本地环境 - 安装依赖
+          ==========================================
+          将检查并安装以下工具：
+          - jq (JSON 处理)
+          - perl (文本处理)
+          - python3-yaml (YAML 解析)
+          ==========================================
+    
+    # 检查 jq
+    - name: 检查 jq 是否已安装
+      command: which jq
+      register: jq_check
+      changed_when: false
+      failed_when: false
+    
+    - name: 安装 jq
+      apt:
+        name: jq
+        state: present
+        update_cache: yes
+      become: yes
+      when: jq_check.rc != 0
+    
+    # 检查 perl
+    - name: 检查 perl 是否已安装
+      command: which perl
+      register: perl_check
+      changed_when: false
+      failed_when: false
+    
+    - name: 安装 perl
+      apt:
+        name: perl
+        state: present
+      become: yes
+      when: perl_check.rc != 0
+    
+    # 检查 python3-yaml
+    - name: 检查 python3-yaml 是否已安装
+      command: python3 -c "import yaml"
+      register: yaml_check
+      changed_when: false
+      failed_when: false
+    
+    - name: 安装 python3-yaml
+      apt:
+        name: python3-yaml
+        state: present
+      become: yes
+      when: yaml_check.rc != 0
+    
+    # 验证所有依赖
+    - name: 验证 jq
+      command: jq --version
+      register: jq_version
+      changed_when: false
+    
+    - name: 验证 perl
+      command: perl --version
+      register: perl_version
+      changed_when: false
+    
+    - name: 验证 python3-yaml
+      command: python3 -c "import yaml; print('yaml module OK')"
+      register: yaml_version
+      changed_when: false
+    
+    - name: 显示安装结果
+      debug:
+        msg: |
+          ==========================================
+          ✓ 环境准备完成
+          ==========================================
+          jq: {{ jq_version.stdout_lines[0] }}
+          perl: 已安装
+          python3-yaml: 已安装
+          ==========================================
+          
+          现在可以运行配置生成脚本：
+          ./bin/generate_config.sh
+          ==========================================
+

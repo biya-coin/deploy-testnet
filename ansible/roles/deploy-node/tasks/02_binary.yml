@@ -1,0 +1,214 @@
+---
+# ==========================================
+# 任务模块：Cosmovisor 二进制文件部署
+# ==========================================
+# 功能：
+#   1. 安装 Cosmovisor
+#   2. 创建 Cosmovisor 目录结构
+#   3. 部署初始二进制文件到 genesis 目录
+#   4. 验证文件完整性
+# ==========================================
+
+- name: 显示 Cosmovisor 部署信息
+  debug:
+    msg: |
+      开始部署 Cosmovisor 和二进制文件
+      - 源目录: {{ local_binary_dir }}
+      - Cosmovisor 目录: {{ node_home_base }}/cosmovisor
+  tags: ['binary']
+
+# ------------------------------------------
+# 安装 Cosmovisor（从本地上传，由 build.sh 通过 Ansible 预先编译）
+# ------------------------------------------
+- name: 检查本地 Cosmovisor 是否存在
+  stat:
+    path: "{{ local_binary_dir }}/cosmovisor"
+  delegate_to: localhost
+  register: local_cosmovisor_exists
+  tags: ['binary', 'cosmovisor']
+
+- name: Cosmovisor 未找到
+  fail:
+    msg: |
+      ✗ Cosmovisor 未找到: {{ local_binary_dir }}/cosmovisor
+      
+      请先运行 build.sh 编译所有工具:
+        cd ansible
+        ./build.sh
+  when: not local_cosmovisor_exists.stat.exists
+  tags: ['binary', 'cosmovisor']
+
+- name: 创建 Go bin 目录
+  file:
+    path: "{{ gopath }}/bin"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0755'
+  tags: ['binary', 'cosmovisor']
+
+- name: 上传 Cosmovisor 到目标服务器
+  copy:
+    src: "{{ local_binary_dir }}/cosmovisor"
+    dest: "{{ gopath }}/bin/cosmovisor"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0755'
+  tags: ['binary', 'cosmovisor']
+
+- name: 验证 Cosmovisor 安装
+  stat:
+    path: "{{ gopath }}/bin/cosmovisor"
+  register: cosmovisor_check
+  failed_when: not cosmovisor_check.stat.exists
+  tags: ['binary', 'cosmovisor']
+
+- name: 显示 Cosmovisor 版本
+  shell: "{{ gopath }}/bin/cosmovisor version"
+  register: cosmovisor_version
+  changed_when: false
+  failed_when: false
+  environment:
+    DAEMON_NAME: "biyachaind"
+    DAEMON_HOME: "{{ node_home_base }}"
+    DAEMON_DATA_BACKUP_DIR: "{{ node_home_base }}/data-backup"
+  tags: ['binary', 'cosmovisor']
+
+- name: 显示 Cosmovisor 信息
+  debug:
+    msg: |
+      Cosmovisor 已安装: {{ gopath }}/bin/cosmovisor
+      版本输出: {{ cosmovisor_version.stderr_lines[0] | default('已安装') }}
+  tags: ['binary', 'cosmovisor']
+
+# ------------------------------------------
+# 创建 Cosmovisor 目录结构
+# ------------------------------------------
+- name: 创建 Cosmovisor 目录结构
+  file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0755'
+  loop:
+    - "{{ node_home_base }}/cosmovisor"
+    - "{{ node_home_base }}/cosmovisor/genesis"
+    - "{{ node_home_base }}/cosmovisor/genesis/bin"
+    - "{{ node_home_base }}/cosmovisor/upgrades"
+  tags: ['binary', 'cosmovisor']
+
+- name: 显示目录创建结果
+  debug:
+    msg: "Cosmovisor 目录结构已创建"
+  tags: ['binary', 'cosmovisor']
+
+# ------------------------------------------
+# 上传二进制文件到临时目录
+# ------------------------------------------
+- name: 上传 biyachaind 到临时目录
+  copy:
+    src: "{{ local_binary_dir }}/biyachaind"
+    dest: "{{ deploy_temp_dir }}/biyachaind"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0755'
+  tags: ['binary', 'upload']
+
+- name: 上传 peggo 到临时目录
+  copy:
+    src: "{{ local_binary_dir }}/peggo"
+    dest: "{{ deploy_temp_dir }}/peggo"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0755'
+  tags: ['binary', 'upload']
+
+- name: 上传 WASM 库到临时目录
+  copy:
+    src: "{{ local_binary_dir }}/libwasmvm.x86_64.so"
+    dest: "{{ deploy_temp_dir }}/libwasmvm.x86_64.so"
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0644'
+  tags: ['binary', 'upload']
+
+# ------------------------------------------
+# 部署到 Cosmovisor genesis 目录
+# ------------------------------------------
+- name: 复制 biyachaind 到 Cosmovisor genesis/bin
+  copy:
+    src: "{{ deploy_temp_dir }}/biyachaind"
+    dest: "{{ node_home_base }}/cosmovisor/genesis/bin/biyachaind"
+    remote_src: yes
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0755'
+  tags: ['binary', 'install']
+
+- name: 复制 WASM 库到 Cosmovisor genesis/bin
+  copy:
+    src: "{{ deploy_temp_dir }}/libwasmvm.x86_64.so"
+    dest: "{{ node_home_base }}/cosmovisor/genesis/bin/libwasmvm.x86_64.so"
+    remote_src: yes
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0644'
+  tags: ['binary', 'install']
+
+# ------------------------------------------
+# 安装 peggo 到 /data/biyachain/bin（不通过 Cosmovisor）
+# ------------------------------------------
+- name: 创建二进制文件目录
+  file:
+    path: "{{ binary_dir }}"
+    state: directory
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0755'
+  tags: ['binary', 'install']
+
+- name: 安装 peggo 到二进制目录
+  copy:
+    src: "{{ deploy_temp_dir }}/peggo"
+    dest: "{{ binary_dir }}/peggo"
+    remote_src: yes
+    owner: "{{ deploy_user }}"
+    group: "{{ deploy_group }}"
+    mode: '0755'
+  tags: ['binary', 'install']
+
+# ------------------------------------------
+# 验证安装
+# ------------------------------------------
+- name: 验证 Cosmovisor genesis 二进制文件
+  stat:
+    path: "{{ node_home_base }}/cosmovisor/genesis/bin/biyachaind"
+  register: genesis_binary_check
+  failed_when: not genesis_binary_check.stat.exists
+  tags: ['binary', 'verify']
+
+- name: 验证 WASM 库
+  stat:
+    path: "{{ node_home_base }}/cosmovisor/genesis/bin/libwasmvm.x86_64.so"
+  register: genesis_wasm_check
+  failed_when: not genesis_wasm_check.stat.exists
+  tags: ['binary', 'verify']
+
+- name: 验证二进制文件可执行
+  shell: "LD_LIBRARY_PATH={{ node_home_base }}/cosmovisor/genesis/bin {{ node_home_base }}/cosmovisor/genesis/bin/biyachaind version"
+  register: version_check
+  changed_when: false
+  failed_when: version_check.rc != 0
+  tags: ['binary', 'verify']
+
+- name: 显示节点版本信息
+  debug:
+    msg: |
+      Cosmovisor 部署完成:
+      - 节点版本: {{ version_check.stdout }}
+      - Genesis 二进制: {{ node_home_base }}/cosmovisor/genesis/bin/biyachaind
+      - WASM 库: {{ node_home_base }}/cosmovisor/genesis/bin/libwasmvm.x86_64.so
+      - Cosmovisor: {{ gopath }}/bin/cosmovisor
+  tags: ['binary', 'verify']
+

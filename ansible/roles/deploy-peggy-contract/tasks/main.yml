@@ -1,0 +1,884 @@
+---
+# Peggy 合约部署任务
+# 在本地部署合约并更新本地 genesis.json，然后同步到远程服务器
+
+- name: 显示开始部署 Peggy 合约信息（本地执行）
+  debug:
+    msg: |
+      ==========================================
+      在本地部署 Peggy 合约到 Sepolia
+      ==========================================
+      合约部署将在本地完成，然后更新本地配置文件
+      ==========================================
+  delegate_to: localhost
+  run_once: true
+
+- name: 检查本地配置文件目录是否存在
+  stat:
+    path: "{{ local_config_dir }}"
+  register: local_config_dir_stat
+  delegate_to: localhost
+  run_once: true
+
+- name: 验证本地配置文件目录存在
+  fail:
+    msg: "本地配置文件目录不存在: {{ local_config_dir }}，请先运行 chain-stresser generate"
+  when: not local_config_dir_stat.stat.exists
+  delegate_to: localhost
+  run_once: true
+
+- name: 检查本地 genesis.json 是否存在
+  stat:
+    path: "{{ local_config_dir }}/validator-0/config/genesis.json"
+  register: genesis_json_stat
+  delegate_to: localhost
+  run_once: true
+
+- name: 验证本地 genesis.json 存在
+  fail:
+    msg: "本地 genesis.json 不存在于 {{ local_config_dir }}/validator-0/config/genesis.json，请先运行 ./bin/generate_config.sh"
+  when: not genesis_json_stat.stat.exists
+  delegate_to: localhost
+  run_once: true
+
+- name: 从所有 validator 的 peggo_evm_key.json 读取 EVM 地址（重新读取，因为 role 之间变量不共享）
+  shell: |
+    # 读取所有 validator 的 EVM 地址（从 peggo_evm_key.json）
+    addresses=""
+    powers=""
+    for validator_dir in {{ local_config_dir }}/validator-*/; do
+      peggo_evm_key_file="${validator_dir}config/peggo_evm_key.json"
+      if [ -f "$peggo_evm_key_file" ]; then
+        evm_addr=$(jq -r '.evm_address' "$peggo_evm_key_file" 2>/dev/null || echo "")
+        if [ -n "$evm_addr" ] && [ "$evm_addr" != "null" ]; then
+          if [ -n "$addresses" ]; then
+            addresses="${addresses},"
+            powers="${powers},"
+          fi
+          addresses="${addresses}0x${evm_addr}"
+          powers="${powers}1073741823"
+        fi
+      fi
+    done
+    echo "$addresses"
+    echo "$powers" >&2
+  register: all_validator_evm_addrs_contract
+  delegate_to: localhost
+  run_once: true
+  failed_when: false
+  changed_when: false
+
+- name: 读取第一个 validator 的 Cosmos 地址（从 keyring 或 genesis.json）
+  shell: |
+    validator_dir="{{ local_config_dir }}/validator-0"
+    # 首先尝试从 keyring 读取
+    if [ -d "${validator_dir}/keyring-test" ] || [ -d "${validator_dir}/keyring-file" ]; then
+      # 尝试从 keyring 读取
+      cosmos_addr=$(biyachaind keys show validator --keyring-backend test --home "$validator_dir" 2>/dev/null | grep -E "^  address:" | awk '{print $2}' || echo "")
+      if [ -n "$cosmos_addr" ]; then
+        echo "$cosmos_addr"
+        exit 0
+      fi
+    fi
+    # 如果 keyring 读取失败，从 genesis.json 读取
+    genesis_file="${validator_dir}/config/genesis.json"
+    if [ -f "$genesis_file" ]; then
+      cosmos_addr=$(jq -r '.app_state.genutil.gen_txs[0].body.messages[0].delegator_address' "$genesis_file" 2>/dev/null || echo "")
+      if [ -n "$cosmos_addr" ] && [ "$cosmos_addr" != "null" ]; then
+        echo "$cosmos_addr"
+      else
+        echo ""
+      fi
+    else
+      echo ""
+    fi
+  register: first_validator_inj_addr_contract
+  delegate_to: localhost
+  run_once: true
+  failed_when: false
+  changed_when: false
+
+- name: 读取第一个 validator 的 EVM 地址（从 peggo_evm_key.json）
+  shell: |
+    peggo_evm_key_file="{{ local_config_dir }}/validator-0/config/peggo_evm_key.json"
+    if [ -f "$peggo_evm_key_file" ]; then
+      evm_addr=$(jq -r '.evm_address' "$peggo_evm_key_file" 2>/dev/null || echo "")
+      if [ -n "$evm_addr" ] && [ "$evm_addr" != "null" ]; then
+        echo "0x${evm_addr}"
+      else
+        echo ""
+      fi
+    else
+      echo ""
+    fi
+  register: first_validator_evm_addr_contract
+  delegate_to: localhost
+  run_once: true
+  failed_when: false
+  changed_when: false
+
+- name: 设置所有 validator 地址变量（用于合约部署）
+  set_fact:
+    all_validator_evm_addresses: "{{ all_validator_evm_addrs_contract.stdout }}"
+    all_validator_powers: "{{ all_validator_evm_addrs_contract.stderr }}"
+    genesis_inj_addr: "{{ first_validator_inj_addr_contract.stdout }}"
+    genesis_evm_addr: "{{ first_validator_evm_addr_contract.stdout }}"
+  delegate_to: localhost
+  run_once: true
+
+- name: 显示读取的 validator 地址信息
+  debug:
+    msg: |
+      读取的 Validator 地址信息:
+      - 所有 Validator EVM 地址: {{ all_validator_evm_addresses }}
+      - 所有 Validator Powers: {{ all_validator_powers }}
+      - 第一个 Validator Injective 地址: {{ genesis_inj_addr }}
+      - 第一个 Validator EVM 地址: {{ genesis_evm_addr }}
+  delegate_to: localhost
+  run_once: true
+
+- name: 验证合约部署者私钥已配置
+  fail:
+    msg: |
+      peggy_deployer_from_pk 未配置！
+      
+      请在 inventory.yml 的 all.vars 中设置 peggy_deployer_from_pk（用于部署合约的以太坊私钥）
+      
+      示例：
+        peggy_deployer_from_pk: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+      
+      注意：
+      - 这是以太坊私钥（64位十六进制，以 0x 开头）
+      - 该地址需要有足够的 Sepolia ETH 支付 gas 费用
+      - 如果只想部署节点不部署合约，请使用: ./deploy.sh --node-only
+  when: peggy_deployer_from_pk is not defined or peggy_deployer_from_pk == '' or peggy_deployer_from_pk == '""'
+
+- name: 检查 jq 是否已安装（本地）
+  command: which jq
+  register: jq_check
+  delegate_to: localhost
+  run_once: true
+  failed_when: false
+  changed_when: false
+
+- name: 安装 jq（如果未安装，本地）
+  apt:
+    name: jq
+    state: present
+    update_cache: yes
+  when: jq_check.rc != 0
+  become: yes
+  delegate_to: localhost
+  run_once: true
+
+- name: 部署 Peggy 合约到 Sepolia
+  block:
+    - name: 检查 etherman 是否已安装（本地）
+      command: which etherman
+      register: etherman_check
+      delegate_to: localhost
+      run_once: true
+      failed_when: false
+      changed_when: false
+
+    - name: 安装 etherman（如果未安装）
+      block:
+        - name: 检查 Go 是否已安装（本地）
+          command: which go
+          register: go_check
+          delegate_to: localhost
+          run_once: true
+          failed_when: false
+          changed_when: false
+
+        - name: 检查 Go 版本（如果已安装，本地）
+          shell: go version | awk '{print $3}' | sed 's/go//'
+          register: go_version
+          delegate_to: localhost
+          run_once: true
+          failed_when: false
+          changed_when: false
+          when: go_check.rc == 0
+
+        - name: 检查 Go 版本是否满足要求（>= 1.23.1）
+          shell: |
+            current_version="{{ go_version.stdout }}"
+            required_version="1.23.1"
+            # 使用 sort -V 进行版本比较
+            if [ "$(printf '%s\n' "$required_version" "$current_version" | sort -V | head -n1)" = "$required_version" ]; then
+              echo "ok"
+            else
+              echo "not_ok"
+            fi
+          register: go_version_check
+          delegate_to: localhost
+          run_once: true
+          failed_when: false
+          changed_when: false
+          when: go_check.rc == 0 and go_version.stdout is defined
+
+        - name: 设置 Go 版本检查结果
+          set_fact:
+            go_version_ok: "{{ go_version_check.stdout == 'ok' }}"
+          delegate_to: localhost
+          run_once: true
+          when: go_check.rc == 0 and go_version.stdout is defined
+
+        - name: 安装 Go 1.23.8（如果未安装或版本不满足要求，本地）
+          block:
+            - name: 下载 Go 1.23.8
+              get_url:
+                url: https://go.dev/dl/go1.23.8.linux-amd64.tar.gz
+                dest: /tmp/go1.23.8.linux-amd64.tar.gz
+                mode: '0644'
+              delegate_to: localhost
+              run_once: true
+
+            - name: 删除旧版 Go（如果存在）
+              file:
+                path: /usr/local/go
+                state: absent
+                become: yes
+              delegate_to: localhost
+              run_once: true
+              when: go_check.rc == 0
+
+            - name: 解压并安装 Go 1.23.8
+              unarchive:
+                src: /tmp/go1.23.8.linux-amd64.tar.gz
+                dest: /usr/local
+                remote_src: yes
+                become: yes
+              delegate_to: localhost
+              run_once: true
+
+            - name: 创建 Go 符号链接（如果不存在）
+              file:
+                src: /usr/local/go/bin/go
+                dest: /usr/local/bin/go
+                state: link
+                become: yes
+              delegate_to: localhost
+              run_once: true
+
+            - name: 清理临时文件
+              file:
+                path: /tmp/go1.23.8.linux-amd64.tar.gz
+                state: absent
+              delegate_to: localhost
+              run_once: true
+
+            - name: 验证 Go 安装
+              command: /usr/local/go/bin/go version
+              register: go_install_check
+              delegate_to: localhost
+              run_once: true
+              changed_when: false
+              when: go_check.rc != 0 or (go_version_ok is defined and not go_version_ok)
+
+        - name: 删除旧的 etherman 目录（如果存在）
+          shell: rm -rf /tmp/etherman-src
+          delegate_to: localhost
+          run_once: true
+          failed_when: false
+          changed_when: false
+
+        - name: 克隆 etherman 仓库（本地）
+          git:
+            repo: https://github.com/InjectiveLabs/etherman.git
+            dest: /tmp/etherman-src
+            version: master
+            force: yes
+          delegate_to: localhost
+          run_once: true
+
+        - name: 构建 etherman（本地）
+          shell: |
+            cd /tmp/etherman-src
+            go mod tidy
+            go build -o etherman
+          environment:
+            GOPATH: "{{ ansible_env.HOME }}/go"
+            PATH: "{{ ansible_env.PATH }}:/usr/local/go/bin"
+          delegate_to: localhost
+          run_once: true
+
+        - name: 安装 etherman（本地）
+          copy:
+            src: /tmp/etherman-src/etherman
+            dest: /usr/local/bin/etherman
+            mode: '0755'
+            remote_src: yes
+            become: yes
+          delegate_to: localhost
+          run_once: true
+
+      when: etherman_check.rc != 0
+    - name: 检查 solc-select 是否已安装（本地）
+      command: which solc-select
+      register: solc_select_check
+      delegate_to: localhost
+      run_once: true
+      failed_when: false
+      changed_when: false
+
+    - name: 检查 python3-pip 是否已安装（本地）
+      command: which pip3
+      register: pip3_check
+      delegate_to: localhost
+      run_once: true
+      failed_when: false
+      changed_when: false
+
+    - name: 安装 python3-pip（本地，跳过缓存更新以避免仓库错误）
+      apt:
+        name: python3-pip
+        state: present
+        update_cache: no
+      become: yes
+      delegate_to: localhost
+      run_once: true
+      when: pip3_check.rc != 0
+
+    - name: 安装 solc-select（本地）
+      pip:
+        name: solc-select
+        executable: pip3
+        state: present
+      when: solc_select_check.rc != 0
+      delegate_to: localhost
+      run_once: true
+
+    - name: 安装 solc 0.8.0（本地）
+      shell: |
+        export PATH="$HOME/.local/bin:$PATH"
+        solc-select install 0.8.0
+        solc-select use 0.8.0
+      environment:
+        PATH: "{{ ansible_env.PATH }}:$HOME/.local/bin"
+      delegate_to: localhost
+      run_once: true
+
+    - name: 清理并重新创建临时合约部署目录
+      shell: |
+        sudo rm -rf /tmp/peggy-deploy-local
+        mkdir -p /tmp/peggy-deploy-local
+        chmod 777 /tmp/peggy-deploy-local
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+
+    - name: 检查本地源码目录是否存在
+      stat:
+        path: "{{ playbook_dir }}/build/biyachain/peggo/solidity/deployment"
+      register: local_source_deployment_dir
+      delegate_to: localhost
+      run_once: true
+
+    - name: 使用本地源码目录（如果存在）
+      shell: |
+        cp -r "{{ playbook_dir }}/build/biyachain" /tmp/peggy-deploy-local/injective-core
+      delegate_to: localhost
+      run_once: true
+      when: 
+        - not skip_contract_deploy | default(false)
+        - local_source_deployment_dir.stat.exists
+      failed_when: false
+
+    - name: 克隆 injective-core 仓库（备用方案，仅在本地源码不存在时使用）
+      git:
+        repo: "{{ peggy_injective_core_repo | default('https://github.com/biya-coin/injective-core.git') }}"
+        dest: /tmp/peggy-deploy-local/injective-core
+        version: "{{ peggy_injective_core_branch | default('dev') }}"
+        force: yes
+      delegate_to: localhost
+      run_once: true
+      when: 
+        - not skip_contract_deploy | default(false)
+        - not local_source_deployment_dir.stat.exists
+
+    - name: 设置合约部署 RPC URI（避免递归循环）
+      set_fact:
+        final_peggy_deployer_rpc_uri: "{{ peggy_deployer_rpc_uri if (peggy_deployer_rpc_uri is defined and peggy_deployer_rpc_uri != '') else peggo_eth_rpc }}"
+      delegate_to: localhost
+      run_once: true
+
+    - name: 生成合约部署 .env 文件（本地）
+      template:
+        src: peggy-deploy.env.j2
+        dest: /tmp/peggy-deploy-local/injective-core/peggo/solidity/deployment/.env
+        mode: '0644'
+      delegate_to: localhost
+      run_once: true
+      when: true
+
+    - name: 复制 PEGGY_ID 转换脚本
+      copy:
+        src: convert-peggy-id.sh
+        dest: /tmp/convert-peggy-id.sh
+        mode: '0755'
+      delegate_to: localhost
+      run_once: true
+      when: true
+
+    - name: 准备 PEGGY_ID（转换为 bytes32 格式）
+      command: /tmp/convert-peggy-id.sh "{{ peggy_id | default('biyachain-peggyid') }}"
+      register: peggy_id_bytes32
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+      when: true
+
+    - name: 显示 PEGGY_ID 信息
+      debug:
+        msg: |
+          使用 PEGGY_ID: {{ peggy_id | default('biyachain-peggyid') }}
+          转换为 bytes32: {{ peggy_id_bytes32.stdout }}
+      delegate_to: localhost
+      run_once: true
+      when: true
+
+    - name: 部署 Peggy 合约（本地执行）
+      shell: >
+        cd /tmp/peggy-deploy-local/injective-core/peggo/solidity/deployment &&
+        chmod +x deploy-on-evm.sh &&
+        PEGGY_ID="{{ peggy_id_bytes32.stdout }}"
+        POWER_THRESHOLD="{{ peggy_power_threshold | default('100') }}"
+        VALIDATOR_ADDRESSES="{{ all_validator_evm_addresses | default(genesis_evm_addr) }}"
+        VALIDATOR_POWERS="{{ all_validator_powers | default(peggy_validator_powers | default('4294967295')) }}"
+        ./deploy-on-evm.sh 2>&1 | tee deploy.log
+      register: contract_deploy_result
+      delegate_to: localhost
+      run_once: true
+      failed_when: false
+      changed_when: false
+      environment:
+        HOME: "{{ ansible_env.HOME }}"
+        PATH: "{{ ansible_env.PATH }}:$HOME/.local/bin"
+      when: true
+
+    - name: 从部署日志中提取合约地址（本地）
+      shell: |
+        log_file="/tmp/peggy-deploy-local/injective-core/peggo/solidity/deployment/deploy.log"
+        
+        # 检查日志文件是否存在
+        if [ ! -f "$log_file" ]; then
+          echo "ERROR: Deploy log not found" >&2
+          echo ""
+          exit 0
+        fi
+        
+        # 检查是否有超时错误
+        if grep -q "await timeout" "$log_file"; then
+          echo "ERROR: Contract deployment timeout" >&2
+          echo ""
+          exit 0
+        fi
+        
+        # 方法1: 从成功消息中提取
+        addr=$(grep -E 'Peggy deployment done! Use' "$log_file" | tail -n1 | awk '{print $NF}' || echo "")
+        if [ -z "$addr" ] || [ "$addr" == "" ]; then
+          # 方法2: 从日志中提取最后一个部署的合约地址（可能是Proxy）
+          addr=$(grep -E 'Deployed.*contract: 0x[0-9a-fA-F]{40}' "$log_file" | tail -n1 | grep -oE '0x[0-9a-fA-F]{40}' | tail -n1 || echo "")
+        fi
+        if [ -z "$addr" ] || [ "$addr" == "" ]; then
+          # 方法3: 从错误日志中提取交易hash，然后查询receipt
+          tx_hash=$(grep -oE 'hash=0x[0-9a-fA-F]{64}' "$log_file" | tail -n1 | cut -d= -f2 || echo "")
+          if [ -n "$tx_hash" ] && [ "$tx_hash" != "" ]; then
+            # 查询交易receipt获取合约地址
+            receipt=$(curl -s -X POST -H 'Content-Type: application/json' --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getTransactionReceipt\",\"params\":[\"$tx_hash\"],\"id\":1}" "{{ peggo_eth_rpc }}" | jq -r '.result.contractAddress // empty' 2>/dev/null || echo "")
+            if [ -n "$receipt" ] && [ "$receipt" != "" ] && [ "$receipt" != "null" ]; then
+              addr="$receipt"
+            fi
+          fi
+        fi
+        echo "$addr"
+      register: peggy_contract_addr
+      delegate_to: localhost
+      run_once: true
+      failed_when: false
+      changed_when: false
+      when: true
+
+    - name: 从部署日志中提取部署区块高度（本地）
+      shell: |
+        grep -Ei 'Deployment block' /tmp/peggy-deploy-local/injective-core/peggo/solidity/deployment/deploy.log | tail -n1 | awk '{print $NF}' || echo ""
+      register: peggy_deploy_height
+      delegate_to: localhost
+      run_once: true
+      failed_when: false
+      changed_when: false
+      when: true
+
+    - name: 通过 RPC 查询合约部署高度（如果日志中未找到）
+      shell: |
+        # 查询合约首次出现的区块高度
+        latest=$(curl -s -X POST -H 'Content-Type: application/json' --data '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' "{{ peggo_eth_rpc }}" | jq -r '.result' | xargs printf "%d")
+        # 从 latest-50 开始向前查找
+        start=$((latest - 50))
+        [ $start -lt 0 ] && start=0
+        for h in $(seq $start $latest); do
+          hex=$(printf "0x%x" $h)
+          code=$(curl -s -X POST -H 'Content-Type: application/json' --data "{\"jsonrpc\":\"2.0\",\"method\":\"eth_getCode\",\"params\":[\"{{ peggy_contract_addr.stdout | lower }}\",\"$hex\"],\"id\":1}" "{{ peggo_eth_rpc }}" | jq -r '.result')
+          if [ "$code" != "0x" ] && [ -n "$code" ]; then
+            echo $h
+            exit 0
+          fi
+        done
+        echo $start
+      register: peggy_deploy_height_rpc
+      failed_when: false
+      changed_when: false
+      when: 
+        - not skip_contract_deploy | default(false)
+        - peggy_deploy_height.stdout == '' or peggy_deploy_height.stdout == 'null'
+
+    - name: 设置最终合约地址和部署高度
+      set_fact:
+        final_peggy_addr: "{{ peggy_contract_addr.stdout }}"
+        final_peggy_height: "{{ peggy_deploy_height.stdout if peggy_deploy_height.stdout != '' and peggy_deploy_height.stdout != 'null' else peggy_deploy_height_rpc.stdout }}"
+
+    - name: 验证合约地址和部署高度
+      fail:
+        msg: |
+          无法获取合约地址或部署高度
+          
+          可能的原因：
+          1. 合约部署超时（检查以太坊 RPC 连接）
+          2. 合约部署失败（检查部署日志）
+          3. 部署者账户余额不足（需要 Sepolia ETH）
+          
+          调试信息：
+          - 合约地址: {{ final_peggy_addr | default('未获取') }}
+          - 部署高度: {{ final_peggy_height | default('未获取') }}
+          - 部署日志: /tmp/peggy-deploy-local/injective-core/peggo/solidity/deployment/deploy.log
+          
+          请检查：
+          1. tail -100 /tmp/peggy-deploy-local/injective-core/peggo/solidity/deployment/deploy.log
+          2. 确认 inventory.yml 中的 peggo_eth_rpc 可访问
+          3. 确认 peggy_deployer_from_pk 对应的地址有足够的 ETH
+      when: >-
+        final_peggy_addr is not defined or
+        final_peggy_addr == '' or
+        final_peggy_addr == 'null' or
+        final_peggy_addr == 'ERROR: Contract deployment timeout' or
+        final_peggy_addr == 'ERROR: Deploy log not found'
+
+    - name: 显示合约部署结果
+      debug:
+        msg: |
+          合约部署结果:
+          - 合约地址: {{ final_peggy_addr }}
+          - 部署高度: {{ final_peggy_height }}
+
+  when: true
+
+- name: 更新 genesis.json 中的 Peggy 配置
+  block:
+    - name: 获取 genesis valoper 地址
+      shell: |
+        biyachaind debug addr "{{ genesis_inj_addr }}" 2>/dev/null | awk '/Bech32 Val:/ {print $3}' | head -n1
+      register: genesis_valoper_addr
+      delegate_to: localhost
+      run_once: true
+      failed_when: genesis_valoper_addr.stdout == ""
+      changed_when: false
+    
+    - name: 显示 genesis valoper 地址（调试）
+      debug:
+        msg: "Genesis Valoper 地址: {{ genesis_valoper_addr.stdout }}"
+      run_once: true
+
+    - name: 获取所有 validator 的 valoper 地址
+      shell: |
+        # 从所有 validator 的 keyring 读取 cosmos 地址，然后转换为 valoper 地址
+        valopers=""
+        binary_path="{{ playbook_dir | dirname }}/build/bin/biyachaind"
+        
+        # 确保按索引顺序处理（0, 1, 2, 3）
+        for i in $(seq 0 10); do
+          validator_dir="{{ local_config_dir }}/validator-$i"
+          if [ ! -d "$validator_dir" ]; then
+            continue
+          fi
+          
+          cosmos_addr=""
+          # 从 keyring 读取（优先方法）
+          if [ -d "${validator_dir}/keyring-test" ]; then
+            cosmos_addr=$("$binary_path" keys show validator --keyring-backend test --home "$validator_dir" -a 2>/dev/null || echo "")
+          fi
+          
+          # 如果 keyring 读取失败，从 genesis.json 读取
+          if [ -z "$cosmos_addr" ] || [ "$cosmos_addr" = "null" ]; then
+            genesis_file="${validator_dir}/config/genesis.json"
+            if [ -f "$genesis_file" ]; then
+              cosmos_addr=$(jq -r '.app_state.genutil.gen_txs[0].body.messages[0].delegator_address' "$genesis_file" 2>/dev/null || echo "")
+            fi
+          fi
+          
+          # 转换为 valoper 地址
+          if [ -n "$cosmos_addr" ] && [ "$cosmos_addr" != "null" ] && [ "$cosmos_addr" != "" ]; then
+            valoper=$("$binary_path" debug addr "$cosmos_addr" 2>/dev/null | awk '/Bech32 Val:/ {print $3}' | head -n1 || echo "")
+            if [ -n "$valoper" ] && [ "$valoper" != "" ]; then
+              echo "[DEBUG] Validator $i: cosmos=$cosmos_addr valoper=$valoper" >&2
+              if [ -n "$valopers" ]; then
+                valopers="${valopers},"
+              fi
+              valopers="${valopers}${valoper}"
+            fi
+          fi
+        done
+        
+        echo "$valopers"
+      register: all_validator_valopers
+      delegate_to: localhost
+      run_once: true
+      failed_when: all_validator_valopers.stdout == ""
+      changed_when: false
+
+    - name: 设置所有 validator valoper 地址变量
+      set_fact:
+        all_validator_valoper_addresses: "{{ all_validator_valopers.stdout }}"
+      delegate_to: localhost
+      run_once: true
+
+    - name: 验证 valoper 地址数量
+      fail:
+        msg: |
+          获取的 valoper 地址不完整！
+          期望至少获取 {{ env.NumOfValidators | default('1') }} 个地址
+          实际获取: {{ all_validator_valoper_addresses }}
+          调试信息: {{ all_validator_valopers.stderr }}
+      when: all_validator_valoper_addresses == "" or all_validator_valoper_addresses.split(',') | length == 0
+      delegate_to: localhost
+      run_once: true
+
+    - name: 显示所有 validator valoper 地址（调试）
+      debug:
+        msg: |
+          所有 Validator Valoper 地址: {{ all_validator_valoper_addresses }}
+          地址数量: {{ all_validator_valoper_addresses.split(',') | length }}
+          调试输出: {{ all_validator_valopers.stderr }}
+      run_once: true
+
+    - name: 构建所有 validator 的 members 数组（用于合约部署后更新）
+      shell: |
+        python3 << 'PYEOF'
+        import json
+        addresses = "{{ all_validator_evm_addresses | default(genesis_evm_addr) }}".split(',')
+        powers = "{{ all_validator_powers | default(peggy_validator_powers | default('4294967295')) }}".split(',')
+        members = []
+        for addr, power in zip(addresses, powers):
+            if addr and power:
+                members.append({
+                    "power": int(power),
+                    "ethereum_address": addr
+                })
+        # 如果没有多个 validator，使用单个 validator
+        if not members and "{{ genesis_evm_addr }}" != "":
+            members.append({
+                "power": int("{{ peggy_validator_powers | default('4294967295') }}"),
+                "ethereum_address": "{{ genesis_evm_addr }}"
+            })
+        print(json.dumps(members))
+        PYEOF
+      register: contract_members_json_result
+      delegate_to: localhost
+      run_once: true
+
+    - name: 设置合约 members JSON 变量
+      set_fact:
+        contract_valset_members_json: "{{ contract_members_json_result.stdout }}"
+      delegate_to: localhost
+      run_once: true
+
+    - name: 构建所有 validator 的 valoper 数组（JSON 格式）
+      shell: |
+        python3 << 'PYEOF'
+        import json
+        valopers = "{{ all_validator_valoper_addresses }}".split(',')
+        valoper_array = [v for v in valopers if v]
+        print(json.dumps(valoper_array))
+        PYEOF
+      register: valoper_array_json_result
+      delegate_to: localhost
+      run_once: true
+
+    - name: 设置 valoper 数组 JSON 变量
+      set_fact:
+        contract_valoper_array_json: "{{ valoper_array_json_result.stdout }}"
+      delegate_to: localhost
+      run_once: true
+
+    - name: 生成 members JSON（使用 Python）
+      shell: |
+        python3 -c "import json; addresses='{{ all_validator_evm_addresses }}'.split(','); powers='{{ all_validator_powers }}'.split(','); members=[{'power': int(p), 'ethereum_address': a} for a, p in zip(addresses, powers) if a and p]; print(json.dumps(members))"
+      register: members_json_output
+      delegate_to: localhost
+      run_once: true
+
+    - name: 生成 valopers JSON（使用 Python）
+      shell: |
+        python3 -c "import json; valopers='{{ all_validator_valoper_addresses }}'.split(','); result=[v.strip() for v in valopers if v.strip()]; print(json.dumps(result))"
+      register: valopers_json_output
+      delegate_to: localhost
+      run_once: true
+
+    - name: 验证 valopers JSON 格式
+      debug:
+        msg: |
+          Valopers JSON: {{ valopers_json_output.stdout }}
+          解析后数量: {{ (valopers_json_output.stdout | from_json) | length }}
+      run_once: true
+
+    - name: 更新所有节点的 genesis.json（本地，所有节点使用相同配置）
+      shell: |
+        # 设置变量
+        BRIDGE_ADDR="{{ final_peggy_addr }}"
+        CHAIN_ID="{{ peggo_eth_chain_id }}"
+        BRIDGE_HEIGHT="{{ final_peggy_height }}"
+        MEMBERS='{{ members_json_output.stdout }}'
+        VALOPERS='{{ valopers_json_output.stdout }}'
+        
+        # 更新所有节点（validator 和 sentry）
+        for node_dir in {{ local_config_dir }}/validator-*/ {{ local_config_dir }}/sentry-*/; do
+          genesis_file="${node_dir}config/genesis.json"
+          if [ -f "$genesis_file" ]; then
+            echo "更新: $genesis_file"
+            
+            # 执行 jq 更新，捕获错误
+            if jq \
+              --arg bridge_addr "$BRIDGE_ADDR" \
+              --argjson chain_id "$CHAIN_ID" \
+              --argjson bridge_height "$BRIDGE_HEIGHT" \
+              --argjson members "$MEMBERS" \
+              --argjson valopers "$VALOPERS" \
+              '
+              .app_state.peggy.params.bridge_ethereum_address = $bridge_addr
+              | .app_state.peggy.params.bridge_chain_id = ($chain_id | tonumber)
+              | .app_state.peggy.params.bridge_contract_start_height = ($bridge_height | tonumber)
+              | .app_state.peggy.last_observed_nonce = "1"
+              | .app_state.peggy.valsets = [
+                  {
+                    nonce: "1",
+                    members: $members,
+                    height: "1",
+                    reward_amount: "0",
+                    reward_token: "0x0000000000000000000000000000000000000000"
+                  }
+                ]
+              | .app_state.peggy.attestations = [
+                  {
+                    observed: true,
+                    votes: $valopers,
+                    height: "1",
+                    claim: {
+                      "@type": "/injective.peggy.v1.MsgValsetUpdatedClaim",
+                      event_nonce: "1",
+                      valset_nonce: "1",
+                      block_height: ($bridge_height | tostring),
+                      members: $members,
+                      reward_amount: "0",
+                      reward_token: "0x0000000000000000000000000000000000000000",
+                      orchestrator: ""
+                    }
+                  }
+                ]
+              | .app_state.peggy.last_observed_valset = {
+                  nonce: "1",
+                  members: $members,
+                  height: "1",
+                  reward_amount: "0",
+                  reward_token: "0x0000000000000000000000000000000000000000"
+                }
+              ' "$genesis_file" > "${genesis_file}.tmp"; then
+              # jq 成功，移动文件
+              mv "${genesis_file}.tmp" "$genesis_file"
+              echo "  ✅ 已更新: $genesis_file"
+            else
+              # jq 失败，显示错误并保留原文件
+              echo "  ❌ 更新失败: $genesis_file"
+              rm -f "${genesis_file}.tmp"
+              exit 1
+            fi
+          fi
+        done
+      delegate_to: localhost
+      run_once: true
+      environment:
+        HOME: "{{ ansible_env.HOME }}"
+
+    - name: 验证 genesis.json 更新结果
+      shell: |
+        genesis_file="{{ local_config_dir }}/validator-0/config/genesis.json"
+        if [ -f "$genesis_file" ]; then
+          bridge_addr=$(jq -r '.app_state.peggy.params.bridge_ethereum_address' "$genesis_file")
+          bridge_chain_id=$(jq -r '.app_state.peggy.params.bridge_chain_id' "$genesis_file")
+          bridge_height=$(jq -r '.app_state.peggy.params.bridge_contract_start_height' "$genesis_file")
+          attestation_votes_count=$(jq '.app_state.peggy.attestations[0].votes | length' "$genesis_file")
+          attestation_unique_votes=$(jq -r '.app_state.peggy.attestations[0].votes | unique | length' "$genesis_file")
+          
+          echo "合约地址: $bridge_addr"
+          echo "链 ID: $bridge_chain_id"
+          echo "部署高度: $bridge_height"
+          echo "Attestation votes 数量: $attestation_votes_count"
+          echo "Attestation 唯一 valoper 地址数量: $attestation_unique_votes"
+          
+          # 验证合约地址
+          if [ "$bridge_addr" == "" ] || [ "$bridge_addr" == "null" ]; then
+            echo "错误: 合约地址未更新"
+            exit 1
+          fi
+          
+          # 验证 attestation votes 数量
+          if [ "$attestation_unique_votes" -lt 2 ]; then
+            echo "错误: Attestation votes 中唯一 valoper 地址数量不足（期望至少 2 个，实际: $attestation_unique_votes）"
+            echo "Votes 内容:"
+            jq '.app_state.peggy.attestations[0].votes' "$genesis_file"
+            exit 1
+          fi
+          
+          echo "✓ Genesis.json 验证通过"
+        fi
+      delegate_to: localhost
+      run_once: true
+      register: genesis_update_check
+
+    - name: 显示 genesis.json 更新结果
+      debug:
+        msg: |
+          ✅ Genesis.json 更新完成
+          {{ genesis_update_check.stdout }}
+
+    - name: 确保 build 目录存在
+      file:
+        path: "{{ playbook_dir }}/../build"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      run_once: true
+
+    - name: 保存合约部署信息到本地文件
+      copy:
+        content: |
+          # Peggy 合约部署信息
+          # 生成时间: {{ ansible_date_time.iso8601 }}
+          # 合约地址: {{ final_peggy_addr }}
+          # 部署高度: {{ final_peggy_height }}
+          # EVM 地址: {{ genesis_evm_addr }}
+          peggy_contract_address={{ final_peggy_addr }}
+          peggy_deploy_height={{ final_peggy_height }}
+          peggy_validator_evm_addr={{ genesis_evm_addr }}
+        dest: "{{ playbook_dir }}/../build/peggy-contract-info.txt"
+        mode: '0644'
+      delegate_to: localhost
+      run_once: true
+
+    - name: 显示 genesis.json 更新完成
+      debug:
+        msg: |
+          genesis.json 已更新，包含 Peggy 合约地址: {{ final_peggy_addr }}
+          合约信息已保存到: {{ playbook_dir }}/../build/peggy-contract-info.txt
+
+  when: final_peggy_addr is defined and final_peggy_addr != '' and final_peggy_addr != 'null'
+

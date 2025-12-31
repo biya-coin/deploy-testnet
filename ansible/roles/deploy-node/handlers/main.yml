@@ -1,0 +1,59 @@
+---
+# ==========================================
+# deploy-node 角色 Handlers
+# ==========================================
+# 说明：
+#   Handlers 是在任务通知时执行的特殊任务
+#   只有在被 notify 触发时才会执行
+#   通常用于服务重启、配置重载等操作
+# ==========================================
+
+# ------------------------------------------
+# Systemd 相关 Handlers
+# ------------------------------------------
+- name: reload systemd
+  systemd:
+    daemon_reload: yes
+  become: yes
+  listen: "reload systemd"
+
+- name: restart node service
+  systemd:
+    name: "{{ node_service_name }}"
+    state: restarted
+  become: yes
+  listen: "restart node"
+
+- name: stop node service
+  systemd:
+    name: "{{ node_service_name }}"
+    state: stopped
+  become: yes
+  listen: "stop node"
+
+- name: start node service
+  systemd:
+    name: "{{ node_service_name }}"
+    state: started
+  become: yes
+  listen: "start node"
+
+# ------------------------------------------
+# 配置验证 Handlers
+# ------------------------------------------
+- name: validate node config
+  command: "{{ binary_dir }}/{{ node_service_name }}d validate-genesis {{ node_home_base }}/config/genesis.json"
+  register: config_validation
+  changed_when: false
+  failed_when: config_validation.rc != 0
+  become_user: "{{ deploy_user }}"
+  listen: "validate config"
+
+# ------------------------------------------
+# 清理 Handlers
+# ------------------------------------------
+- name: cleanup temp files
+  file:
+    path: "{{ deploy_temp_dir }}"
+    state: absent
+  listen: "cleanup temp"

@@ -1,0 +1,16 @@
+---
+# 本地注册 Orchestrator 的 main task
+- name: 获取所有 validator 目录
+  find:
+    paths: "{{ local_config_dir }}/validators"
+    file_type: directory
+    recurse: no
+  register: validator_dirs
+  delegate_to: localhost
+
+- name: 注册每个 validator
+  include_tasks: register-single.yml
+  loop: "{{ validator_dirs.files }}"
+  loop_control:
+    loop_var: validator_dir_item
+
