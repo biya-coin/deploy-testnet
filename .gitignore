@@ -2,7 +2,7 @@
 .vscode
 .DS_Store
 
+build/
 chain-stresser-deploy/
-ansible/build/
 ansible/chain-deploy-config/
 **/.env

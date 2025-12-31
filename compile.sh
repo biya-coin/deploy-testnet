@@ -14,16 +14,18 @@ set -e
 INJECTIVE_VERSION="v1.17.0"
 INJECTIVE_REPO_URL="https://github.com/biya-coin/injective-core.git"
 
-# 进入 ansible 目录（脚本在 ansible/bin/ 下）
+# 脚本目录（当前目录）
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ANSIBLE_DIR="$(dirname "$SCRIPT_DIR")"
-cd "$ANSIBLE_DIR"
+cd "$SCRIPT_DIR"
 
-# 使用绝对路径
-SOURCE_DIR="$ANSIBLE_DIR/build/biyachain"
-BUILD_DIR="$ANSIBLE_DIR/build"
+# 使用绝对路径 - build 放在当前目录下
+SOURCE_DIR="$SCRIPT_DIR/build/biyachain"
+BUILD_DIR="$SCRIPT_DIR/build"
 GO_CACHE_DIR="$BUILD_DIR/go"
 OUTPUT_BIN_DIR="$BUILD_DIR/bin"
+
+# Ansible 目录
+ANSIBLE_DIR="$SCRIPT_DIR/ansible"
 
 # Go 版本要求
 GO_REQUIRED_VERSION="1.23.8"
@@ -45,14 +47,14 @@ fi
 
 # 使用 Ansible 检查编译环境
 echo "检查编译环境并自动安装缺失的工具..."
-if ! ansible-playbook playbooks/check-build-env.yml \
+if ! ANSIBLE_CONFIG=$ANSIBLE_DIR/ansible.cfg ansible-playbook $ANSIBLE_DIR/playbooks/check-build-env.yml \
     -e "go_required_version=$GO_REQUIRED_VERSION" \
     -e "go_min_version=$GO_MIN_VERSION" > /dev/null 2>&1; then
     
     echo ""
     echo "环境检查失败，正在显示详细信息..."
     echo ""
-    ansible-playbook playbooks/check-build-env.yml \
+    ANSIBLE_CONFIG=$ANSIBLE_DIR/ansible.cfg ansible-playbook $ANSIBLE_DIR/playbooks/check-build-env.yml \
         -e "go_required_version=$GO_REQUIRED_VERSION" \
         -e "go_min_version=$GO_MIN_VERSION"
     exit 1
@@ -61,8 +63,8 @@ fi
 echo "✓ 环境检查通过"
 
 # 检查 playbook
-if [ ! -f "playbooks/build-local.yml" ]; then
-    echo "✗ playbooks/build-local.yml 不存在"
+if [ ! -f "$ANSIBLE_DIR/playbooks/build-local.yml" ]; then
+    echo "✗ $ANSIBLE_DIR/playbooks/build-local.yml 不存在"
     exit 1
 fi
 
@@ -70,7 +72,7 @@ fi
 mkdir -p "$SOURCE_DIR" "$BUILD_DIR" "$GO_CACHE_DIR" "$OUTPUT_BIN_DIR"
 
 # 执行编译（包括 WASM 库下载和 Cosmovisor 编译）
-ansible-playbook -i inventory.yml playbooks/build-local.yml \
+ANSIBLE_CONFIG=$ANSIBLE_DIR/ansible.cfg ansible-playbook -i $ANSIBLE_DIR/inventory.yml $ANSIBLE_DIR/playbooks/build-local.yml \
     -e "injective_version=$INJECTIVE_VERSION" \
     -e "injective_repo_url=$INJECTIVE_REPO_URL" \
     -e "injective_build_dir=$SOURCE_DIR" \
