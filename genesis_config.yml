@@ -1,0 +1,73 @@
+---
+# Genesis.json 配置参数
+# 此文件的结构与 genesis.json 完全对应
+# 注意：只写修改的字段，未定义的字段保持 genesis.json 原值
+
+app_name: "biyachaind"
+chain_id: "biyachain-888"
+
+app_state:
+  # Staking 质押模块
+  staking:
+    params:
+      bond_denom: "inj"
+  exchange:
+    auction_exchange_transfer_denom_decimals:
+      - denom: "inj"
+        decimals: 18
+  
+  # Crisis 危机模块
+  crisis:
+    constant_fee:
+      denom: "inj"
+  
+  # Gov 治理模块
+  gov:
+    params:
+      min_deposit:
+        - denom: "inj"
+          amount: "500000000000000000000"
+      min_initial_deposit_ratio: "0.100000000000000000"  # 10%
+      voting_period: "300s"  # 5分钟（测试网）
+      expedited_voting_period: "100s"  # 100秒
+  
+  # Mint 铸币模块
+  mint:
+    params:
+      mint_denom: "inj"
+  
+  # Auction 拍卖模块
+  auction:
+    params:
+      auction_period: "10"  # 10个区块
+  
+  # OCR 预言机模块
+  ocr:
+    params:
+      payout_block_interval: "5"  # 5个区块
+  
+  # EVM 模块
+  evm:
+    params:
+      chain_config:
+        cancun_time: "0"  # 立即启用 Cancun 升级
+        prague_time: "0"  # 立即启用 Prague 升级
+  
+  # TxFees 交易费用模块
+  txfees:
+    params:
+      mempool1559_enabled: false  # 禁用 EIP-1559
+  
+  # Exchange 交易所模块
+  exchange:
+    auction_exchange_transfer_denom_decimals:
+      - denom: "inj"
+        decimals: 18
+
+# Consensus 共识参数
+consensus:
+  params:
+    block:
+      max_gas: "150000000"  # 1.5亿 gas
+
+# 初始化代币

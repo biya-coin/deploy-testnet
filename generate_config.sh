@@ -112,24 +112,16 @@ init_master_node() {
     perl -i -pe 's/^min-retain-blocks = .*?/min-retain-blocks = 10000/' $APP_FILE
 
 
-    # 修改genesis.json
-    cat $MASTER_HOME/config/genesis.json | jq '.app_state["staking"]["params"]["bond_denom"]="inj"' > $MASTER_HOME/config/tmp_genesis.json && mv $MASTER_HOME/config/tmp_genesis.json $MASTER_HOME/config/genesis.json
-    cat $MASTER_HOME/config/genesis.json | jq '.app_state["crisis"]["constant_fee"]["denom"]="inj"' > $MASTER_HOME/config/tmp_genesis.json && mv $MASTER_HOME/config/tmp_genesis.json $MASTER_HOME/config/genesis.json
-    cat $MASTER_HOME/config/genesis.json | jq '.app_state["gov"]["params"]["min_deposit"][0]["denom"]="inj"' > $MASTER_HOME/config/tmp_genesis.json && mv $MASTER_HOME/config/tmp_genesis.json $MASTER_HOME/config/genesis.json
-    cat $MASTER_HOME/config/genesis.json | jq '.app_state["gov"]["params"]["min_initial_deposit_ratio"]="0.100000000000000000"' > $MASTER_HOME/config/tmp_genesis.json && mv $MASTER_HOME/config/tmp_genesis.json $MASTER_HOME/config/genesis.json
-    cat $MASTER_HOME/config/genesis.json | jq '.app_state["gov"]["params"]["voting_period"]="300s"' > $MASTER_HOME/config/tmp_genesis.json && mv $MASTER_HOME/config/tmp_genesis.json $MASTER_HOME/config/genesis.json
-    cat $MASTER_HOME/config/genesis.json | jq '.app_state["gov"]["params"]["expedited_voting_period"]="100s"' > $MASTER_HOME/config/tmp_genesis.json && mv $MASTER_HOME/config/tmp_genesis.json $MASTER_HOME/config/genesis.json
-    cat $MASTER_HOME/config/genesis.json | jq '.app_state["mint"]["params"]["mint_denom"]="inj"' > $MASTER_HOME/config/tmp_genesis.json && mv $MASTER_HOME/config/tmp_genesis.json $MASTER_HOME/config/genesis.json
-    cat $MASTER_HOME/config/genesis.json | jq '.app_state["auction"]["params"]["auction_period"]="10"' > $MASTER_HOME/config/tmp_genesis.json && mv $MASTER_HOME/config/tmp_genesis.json $MASTER_HOME/config/genesis.json
-    cat $MASTER_HOME/config/genesis.json | jq '.app_state["ocr"]["params"]["payout_block_interval"]="5"' > $MASTER_HOME/config/tmp_genesis.json && mv $MASTER_HOME/config/tmp_genesis.json $MASTER_HOME/config/genesis.json
-    cat $MASTER_HOME/config/genesis.json | jq '.app_state["evm"]["params"]["chain_config"]["cancun_time"]="0"' > $MASTER_HOME/config/tmp_genesis.json && mv $MASTER_HOME/config/tmp_genesis.json $MASTER_HOME/config/genesis.json
-    cat $MASTER_HOME/config/genesis.json | jq '.app_state["evm"]["params"]["chain_config"]["prague_time"]="0"' > $MASTER_HOME/config/tmp_genesis.json && mv $MASTER_HOME/config/tmp_genesis.json $MASTER_HOME/config/genesis.json
-    cat $MASTER_HOME/config/genesis.json | jq '.app_state["txfees"]["params"]["mempool1559_enabled"]=false' > $MASTER_HOME/config/tmp_genesis.json && mv $MASTER_HOME/config/tmp_genesis.json $MASTER_HOME/config/genesis.json
-    cat $MASTER_HOME/config/genesis.json | jq '.consensus["params"]["block"]["max_gas"]="150000000"' > $MASTER_HOME/config/tmp_genesis.json && mv $MASTER_HOME/config/tmp_genesis.json $MASTER_HOME/config/genesis.json
-    # 初始化代币
-    INJ='{"denom":"inj","decimals":18}'
-    DENOM_DECIMALS='['${INJ}']'
-    cat $MASTER_HOME/config/genesis.json | jq '.app_state["exchange"]["auction_exchange_transfer_denom_decimals"]='${DENOM_DECIMALS} > $MASTER_HOME/config/tmp_genesis.json && mv $MASTER_HOME/config/tmp_genesis.json $MASTER_HOME/config/genesis.json
+    # 使用 Python 脚本配置 genesis.json
+    echo "配置 genesis.json..."
+    python3 $SCRIPT_DIR/scripts/merge_genesis.py \
+        $SCRIPT_DIR/genesis_config.yml \
+        $MASTER_HOME/config/genesis.json
+    
+    if [ $? -ne 0 ]; then
+        echo "✗ Genesis 配置失败"
+        exit 1
+    fi
 
     # zero address account
     yes $PASSPHRASE | $CHAIN_BINARY add-genesis-account --chain-id $CHAINID --home $MASTER_HOME inj1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqe2hm49 1inj
