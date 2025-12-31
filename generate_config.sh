@@ -103,15 +103,6 @@ init_master_node() {
     # 生成genesis文件
     $CHAIN_BINARY init $MONIKER --chain-id $CHAINID --home $MASTER_HOME > /dev/null 2>&1
 
-    # 修改config.toml
-    perl -i -pe 's/^timeout_commit = ".*?"/timeout_commit = "1500ms"/' $CONFIG_FILE
-
-    # 修改app.toml
-    perl -i -pe 's/^minimum-gas-prices = ".*?"/minimum-gas-prices = "160000000inj"/' $APP_FILE
-    perl -i -pe 's/^pruning = ".*?"/pruning = "default"/' $APP_FILE
-    perl -i -pe 's/^min-retain-blocks = .*?/min-retain-blocks = 10000/' $APP_FILE
-
-
     # 使用 Python 脚本配置 genesis.json
     echo "配置 genesis.json..."
     python3 $SCRIPT_DIR/scripts/merge_genesis.py \
@@ -184,6 +175,34 @@ copy_genesis(){
     done
 }
 
+# 应用节点配置（并行执行）
+apply_node_configs(){
+    # 应用验证者节点配置（后台并行）
+    for name in $(echo "${!VALIDATORS[@]}" | tr ' ' '\n' | sort); do
+        ANSIBLE_CONFIG=$ANSIBLE_DIR/ansible.cfg ansible-playbook \
+            $ANSIBLE_DIR/playbooks/apply-node-config.yml \
+            -e "node_dir=$BASE_DIR/$name" \
+            -e "node_name=$name" \
+            -e "node_type=validator" \
+            --connection local > /dev/null 2>&1 &
+    done
+    
+    # 应用 Sentry 节点配置（后台并行）
+    for name in $(echo "${!SENTRY_NODES[@]}" | tr ' ' '\n' | sort); do
+        ANSIBLE_CONFIG=$ANSIBLE_DIR/ansible.cfg ansible-playbook \
+            $ANSIBLE_DIR/playbooks/apply-node-config.yml \
+            -e "node_dir=$BASE_DIR/$name" \
+            -e "node_name=$name" \
+            -e "node_type=sentry" \
+            --connection local > /dev/null 2>&1 &
+    done
+    
+    # 等待所有配置任务完成
+    wait
+    
+    echo "✓ 节点配置应用完成"
+}
+
 # 主流程
 main() {
     # 从 inventory.yml 读取节点列表
@@ -207,6 +226,7 @@ main() {
     echo ""
 
     copy_genesis
+    apply_node_configs
 
 }
 # 记录开始时间（毫秒）

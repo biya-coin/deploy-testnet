@@ -1,0 +1,43 @@
+---
+# 优先级：# specific_nodes > node_type (validator/sentry) > global
+# 后面的配置会覆盖前面的配置
+
+# 全局配置（所有节点）
+global:
+  config_toml:
+    timeout_commit: "1.5s"
+  
+  app_toml:
+    minimum-gas-prices: "160000000inj"
+    pruning: "default"
+    min-retain-blocks: 10000
+
+# 验证者节点配置（覆盖全局配置）
+validator:
+  config_toml:
+    tx_index.indexer: "null"
+  
+  app_toml:
+
+# Sentry 节点配置（覆盖全局配置）
+sentry:
+  config_toml:
+    tx_index.indexer: "kv"
+  
+  app_toml:
+
+# 特定节点配置（覆盖类型配置）--> 归档节点
+specific_nodes:
+  validator-0:
+    config_toml:
+
+    app_toml:
+      min-retain-blocks: 50000
+  
+  sentry-0:
+    app_toml:
+      pruning: "nothing"
+      api-enable: true
+
+
+

@@ -1,0 +1,78 @@
+---
+# 应用节点配置
+# 从 node_config.yml 读取配置并自动应用到节点
+# 使用 Ansible 原生模块处理 TOML 文件
+
+- name: 应用节点配置
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  
+  vars:
+    node_config_file: "{{ playbook_dir }}/../../node_config.yml"
+    
+  tasks:
+    - name: 加载节点配置文件
+      include_vars:
+        file: "{{ node_config_file }}"
+        name: node_config
+    
+    - name: 显示配置信息
+      debug:
+        msg: "配置节点: {{ node_name }} (类型: {{ node_type }})"
+    
+    # 合并配置（优先级: specific_nodes > node_type > global）
+    - name: 合并配置
+      set_fact:
+        final_config_toml: "{{ (node_config.global.config_toml | default({})) | combine(node_config[node_type].config_toml | default({})) | combine(node_config.specific_nodes[node_name].config_toml | default({})) }}"
+        final_app_toml: "{{ (node_config.global.app_toml | default({})) | combine(node_config[node_type].app_toml | default({})) | combine(node_config.specific_nodes[node_name].app_toml | default({})) }}"
+    
+    # 应用 config.toml 配置
+    - name: 应用 config.toml 配置
+      when: final_config_toml | length > 0
+      block:
+        - name: 修改 config.toml 参数
+          lineinfile:
+            path: "{{ node_dir }}/config/config.toml"
+            regexp: '^{{ item.key.split(".")[-1] | regex_escape }}\s*='
+            line: '{{ item.key.split(".")[-1] }} = {% if item.value is boolean %}{{ item.value | lower }}{% elif item.value is number %}{{ item.value }}{% else %}"{{ item.value }}"{% endif %}'
+            state: present
+          loop: "{{ final_config_toml | dict2items }}"
+          loop_control:
+            label: "{{ item.key }} = {{ item.value }}"
+    
+    # 应用 app.toml 配置
+    - name: 应用 app.toml 配置
+      when: final_app_toml | length > 0
+      block:
+        # 处理简单参数（不含段名）
+        - name: 修改 app.toml 简单参数
+          lineinfile:
+            path: "{{ node_dir }}/config/app.toml"
+            regexp: '^{{ item.key | regex_escape }}\s*='
+            line: '{{ item.key }} = {% if item.value is boolean %}{{ item.value | lower }}{% elif item.value is number %}{{ item.value }}{% else %}"{{ item.value }}"{% endif %}'
+            state: present
+          loop: "{{ final_app_toml | dict2items | selectattr('key', 'match', '^[^.]+$') | list }}"
+          loop_control:
+            label: "{{ item.key }} = {{ item.value }}"
+          when: item.key is not search('\.')
+        
+        # 处理段内参数（如 api.enable）
+        - name: 修改 app.toml 段内参数
+          shell: |
+            section="{{ item.key.split('.')[0] }}"
+            param="{{ item.key.split('.')[-1] }}"
+            value="{% if item.value is boolean %}{{ item.value | lower }}{% elif item.value is number %}{{ item.value }}{% else %}\"{{ item.value }}\"{% endif %}"
+            
+            # 使用 perl 在特定段内修改参数
+            perl -i -0777 -pe "s/(\[$section\].*?^\s*)($param\s*=\s*).*?\$/\${1}\${2}$value/ms" {{ node_dir }}/config/app.toml
+          loop: "{{ final_app_toml | dict2items | selectattr('key', 'search', '\\.') | list }}"
+          loop_control:
+            label: "{{ item.key }} = {{ item.value }}"
+          when: item.key is search('\.')
+          register: result
+          changed_when: result.rc == 0
+    
+    - name: 配置完成
+      debug:
+        msg: "✓ {{ node_name }} 配置完成"
