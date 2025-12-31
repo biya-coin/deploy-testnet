@@ -3,9 +3,10 @@
 
 set -e
 
-# 进入 ansible 目录（脚本在 ansible/bin/ 下）
+# 脚本目录
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ANSIBLE_DIR="$(dirname "$SCRIPT_DIR")"
+# Ansible 目录
+ANSIBLE_DIR="$SCRIPT_DIR/ansible"
 cd "$ANSIBLE_DIR"
 
 # 解析参数

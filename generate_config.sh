@@ -6,10 +6,9 @@
 #   2. 为每个节点生成独立的配置（包含独立的私钥）
 #   3. 在主节点生成包含所有验证者的 genesis.json
 #   4. 分发 genesis.json 到所有节点
+#   5. 配置 persistent_peers（P2P 连接）
+#   6. 应用节点配置（config.toml 和 app.toml）
 #
-# 注意：
-#   - persistent_peers 由 Ansible 在部署时配置
-#   - config.toml/app.toml 的其他参数由 Ansible 调优
 
 set -e
 
@@ -43,25 +42,8 @@ load_inventory() {
         exit 1
     fi
     
-    # 使用 Python 解析 YAML
-    local parse_result=$(python3 -c "
-import yaml
-
-with open('$inventory_file', 'r') as f:
-    inv = yaml.safe_load(f)
-
-hosts = inv.get('all', {}).get('hosts', {})
-
-for name, config in sorted(hosts.items()):
-    if name.startswith('validator-'):
-        ip = config.get('ansible_host', '')
-        if ip:
-            print(f'VALIDATOR:{name}:{ip}')
-    elif name.startswith('sentry-'):
-        ip = config.get('ansible_host', '')
-        if ip:
-            print(f'SENTRY:{name}:{ip}')
-")
+    # 使用 Python 脚本解析 YAML
+    local parse_result=$(python3 $SCRIPT_DIR/scripts/parse_inventory.py "$inventory_file")
     
     # 解析输出
     while IFS=: read -r node_type node_name node_ip; do
@@ -175,6 +157,22 @@ copy_genesis(){
     done
 }
 
+# 配置 persistent_peers
+configure_persistent_peers(){
+    echo "配置 P2P 连接（persistent_peers）..."
+    
+    python3 $SCRIPT_DIR/scripts/configure_peers.py \
+        $CHAIN_BINARY \
+        $BASE_DIR \
+        $SCRIPT_DIR/node_config.yml \
+        $ANSIBLE_DIR/inventory.yml
+    
+    if [ $? -ne 0 ]; then
+        echo "✗ P2P 连接配置失败"
+        exit 1
+    fi
+}
+
 # 应用节点配置（并行执行 - 使用 Python 脚本）
 apply_node_configs(){
     # 应用验证者节点配置（后台并行）
@@ -224,6 +222,7 @@ main() {
     echo ""
 
     copy_genesis
+    configure_persistent_peers
     apply_node_configs
 
 }

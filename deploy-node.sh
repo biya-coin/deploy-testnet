@@ -51,9 +51,10 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# 进入 ansible 目录（脚本在 ansible/bin/ 下）
+# 脚本目录
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ANSIBLE_DIR="$(dirname "$SCRIPT_DIR")"
+# Ansible 目录
+ANSIBLE_DIR="$SCRIPT_DIR/ansible"
 cd "$ANSIBLE_DIR"
 
 # 检查 inventory.yml 是否存在
@@ -68,48 +69,43 @@ if [ ! -f "playbooks/deploy-full.yml" ]; then
     exit 1
 fi
 
-# 检查二进制文件目录
-BINARY_DIR="./build/bin"
+# 检查二进制文件目录（相对于项目根目录）
+BINARY_DIR="$SCRIPT_DIR/build/bin"
 # 转换为绝对路径
 BINARY_DIR_ABS=$(cd "$BINARY_DIR" 2>/dev/null && pwd || echo "")
 if [ -z "$BINARY_DIR_ABS" ] || [ ! -d "$BINARY_DIR_ABS" ]; then
     echo "错误: 二进制文件目录不存在: $BINARY_DIR"
-    echo "请先运行 ./build.sh 在本地编译"
+    echo "请先运行 ./compile.sh 在本地编译"
     exit 1
 fi
 
 # 检查必需的二进制文件
-if [ ! -f "$BINARY_DIR_ABS/biyachaind" ]; then
-    echo "错误: 未找到 biyachaind: $BINARY_DIR_ABS/biyachaind"
-    echo "请先运行 ./build.sh 在本地编译"
+REQUIRED_BINARIES=("biyachaind" "peggo" "cosmovisor" "libwasmvm.x86_64.so")
+MISSING_BINARIES=()
+
+for binary in "${REQUIRED_BINARIES[@]}"; do
+    if [ ! -f "$BINARY_DIR_ABS/$binary" ]; then
+        MISSING_BINARIES+=("$binary")
+    fi
+done
+
+if [ ${#MISSING_BINARIES[@]} -gt 0 ]; then
+    echo "错误: 缺少以下二进制文件:"
+    for binary in "${MISSING_BINARIES[@]}"; do
+        echo "  - $BINARY_DIR_ABS/$binary"
+    done
+    echo ""
+    echo "请先运行 ./compile.sh 在本地编译"
     exit 1
 fi
 
-if [ ! -f "$BINARY_DIR_ABS/peggo" ]; then
-    echo "错误: 未找到 peggo: $BINARY_DIR_ABS/peggo"
-    echo "请先运行 ./build.sh 在本地编译"
-    exit 1
-fi
-
-if [ ! -f "$BINARY_DIR_ABS/cosmovisor" ]; then
-    echo "错误: 未找到 cosmovisor: $BINARY_DIR_ABS/cosmovisor"
-    echo "请先运行 ./build.sh 在本地编译"
-    exit 1
-fi
-
-if [ ! -f "$BINARY_DIR_ABS/libwasmvm.x86_64.so" ]; then
-    echo "错误: 未找到 libwasmvm.x86_64.so: $BINARY_DIR_ABS/libwasmvm.x86_64.so"
-    echo "请先运行 ./build.sh 在本地编译"
-    exit 1
-fi
-
-# 检查配置文件目录
-CONFIG_DIR="./chain-deploy-config"
+# 检查配置文件目录（相对于项目根目录）
+CONFIG_DIR="$SCRIPT_DIR/chain-deploy-config"
 # 转换为绝对路径
-CONFIG_DIR_ABS=$(cd "$CONFIG_DIR" 2>/dev/null && pwd || echo "$(pwd)/$CONFIG_DIR")
+CONFIG_DIR_ABS=$(cd "$CONFIG_DIR" 2>/dev/null && pwd || echo "$CONFIG_DIR")
 if [ ! -d "$CONFIG_DIR_ABS" ]; then
     echo "错误: 配置文件目录不存在: $CONFIG_DIR_ABS"
-    echo "请先运行 ./bin/generate_config.sh 生成配置文件"
+    echo "请先运行 ./generate_config.sh 生成配置文件"
     exit 1
 fi
 
@@ -333,7 +329,7 @@ if [ "$CLEAN_DATA" == true ] && [ "$SKIP_TO_REGISTER" == false ]; then
     # 停止所有服务（使用 node-control.sh）
     echo "正在停止所有服务（节点 + Peggo）..."
     
-    NODE_CONTROL_SCRIPT="$ANSIBLE_DIR/bin/node-control.sh"
+    NODE_CONTROL_SCRIPT="$SCRIPT_DIR/node-control.sh"
     if [ -f "$NODE_CONTROL_SCRIPT" ]; then
         # 正确的参数格式: ./bin/node-control.sh <action> <service> <node>
         if [ -n "$LIMIT_HOST" ]; then
@@ -753,11 +749,5 @@ echo "=========================================="
 
 echo "=========================================="
 echo "🎉 部署完成！"
-echo "=========================================="
-echo "3. 验证 orchestrator 注册："
-echo "   biyachaind q peggy current-valset \\"
-echo "     --chain-id=biyachain-888 \\"
-echo "     --node=http://127.0.0.1:26757 \\"
-echo "     -o json | jq '.valset.members'"
 echo "=========================================="
 

@@ -71,18 +71,6 @@
 - name: 执行配置文件部署任务
   include_tasks: 03_config.yml
 
-- name: 执行配置文件参数调优（可选）
-  include_tasks: 03a_tune_config.yml
-  when: 
-    - timeout_commit is defined or
-      minimum_gas_prices is defined or
-      pruning is defined or
-      min_retain_blocks is defined or
-      log_level is defined
-
-- name: 执行 P2P 连接配置
-  include_tasks: 03b_configure_peers.yml
-
 # ------------------------------------------
 # 阶段 4: 密钥文件同步
 # ------------------------------------------

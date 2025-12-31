@@ -7,17 +7,17 @@ global:
   config_toml:
     # 端口配置
     proxy_app: "tcp://127.0.0.1:26758" # 26658
-    rpc.laddr: "tcp://127.0.0.1:26757" # 26657
-    rpc.pprof_laddr: "localhost:6160" # 6060
+    rpc.laddr: "tcp://0.0.0.0:26757" # 26657
+    rpc.pprof_laddr: "0.0.0.0:6160" # 6060
     p2p.laddr: "tcp://0.0.0.0:26756" # 26656
-    instrumentation.prometheus_listen_addr: ":26760" # 26660
+    instrumentation.prometheus_listen_addr: "0.0.0.0:26760" # 26660
     # 共识
     timeout_commit: "1.5s"
   
   app_toml:
     # 端口配置
-    json-rpc.address:: "127.0.0.1:8645" # 8545
-    json-rpc.ws-address:: "127.0.0.1:8646" # 8546
+    json-rpc.address: "0.0.0.0:8645" # 8545
+    json-rpc.ws-address: "0.0.0.0:8646" # 8546
     api.address: "tcp://0.0.0.0:10437" # 10337
     grpc.address: "0.0.0.0:10000"     # 9900
     # 

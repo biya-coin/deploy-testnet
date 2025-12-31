@@ -6,12 +6,13 @@
 # 注意：不使用 set -e，因为我们需要处理多个节点的错误而不中断循环
 
 # 配置
-# 进入 ansible 目录（脚本在 ansible/bin/ 下）
+# 脚本目录
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ANSIBLE_DIR="$(dirname "$SCRIPT_DIR")"
+# Ansible 目录
+ANSIBLE_DIR="$SCRIPT_DIR/ansible"
 cd "$ANSIBLE_DIR"
 INVENTORY_FILE="$ANSIBLE_DIR/inventory.yml"
-CONFIG_DIR="$ANSIBLE_DIR/chain-deploy-config"
+CONFIG_DIR="$SCRIPT_DIR/chain-deploy-config"
 PEGGO_HOME="/home/ubuntu/.peggo"  # Peggo 主目录
 
 # 颜色输出

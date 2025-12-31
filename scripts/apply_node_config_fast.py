@@ -22,14 +22,6 @@ def apply_toml(file_path, params):
         content = f.read()
     
     for key, value in params.items():
-        if '.' in key:
-            # 段内参数
-            section, param = key.rsplit('.', 1)
-            pattern = rf'(\[{re.escape(section)}\][^\[]*?)({re.escape(param)}\s*=\s*).*?$'
-        else:
-            # 简单参数
-            pattern = rf'^({re.escape(key)}\s*=\s*).*?$'
-        
         # 格式化值
         if isinstance(value, bool):
             new_value = str(value).lower()
@@ -39,10 +31,16 @@ def apply_toml(file_path, params):
             new_value = f'"{value}"'
         
         if '.' in key:
-            replacement = rf'\1\2{new_value}'
-            content = re.sub(pattern, replacement, content, flags=re.MULTILINE | re.DOTALL)
+            # 段内参数 (如 api.enable)
+            section, param = key.rsplit('.', 1)
+            # 匹配段标记后的参数，只匹配到行尾（不包括换行符）
+            pattern = rf'(\[{re.escape(section)}\][^\[]*?)({re.escape(param)}\s*=\s*)[^\n]*'
+            replacement = rf'\g<1>\g<2>{new_value}'
+            content = re.sub(pattern, replacement, content, flags=re.DOTALL)
         else:
-            replacement = rf'\1{new_value}'
+            # 简单参数 - 只匹配该行的值部分（不包括换行符）
+            pattern = rf'^({re.escape(key)}\s*=\s*)[^\n]*'
+            replacement = rf'\g<1>{new_value}'
             content = re.sub(pattern, replacement, content, flags=re.MULTILINE)
     
     with open(file_path, 'w') as f:

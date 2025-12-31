@@ -12,8 +12,8 @@
     - always
   
   vars:
-    local_config_dir: "{{ playbook_dir }}/../chain-deploy-config"
-    local_binary_dir: "{{ playbook_dir }}/../build/bin"
+    local_config_dir: "{{ playbook_dir }}/../../chain-deploy-config"
+    local_binary_dir: "{{ playbook_dir }}/../../build/bin"
     
   tasks:
     - name: 显示本地准备工作信息
@@ -70,8 +70,8 @@
     - never  # 默认不执行，除非明确指定
   
   vars:
-    local_config_dir: "{{ playbook_dir }}/../chain-deploy-config"
-    local_binary_dir: "{{ playbook_dir }}/../build/bin"
+    local_config_dir: "{{ playbook_dir }}/../../chain-deploy-config"
+    local_binary_dir: "{{ playbook_dir }}/../../build/bin"
     
   pre_tasks:
     - name: 显示当前连接的服务器信息（在密码提示前）
