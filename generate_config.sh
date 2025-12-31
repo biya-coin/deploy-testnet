@@ -175,26 +175,24 @@ copy_genesis(){
     done
 }
 
-# 应用节点配置（并行执行）
+# 应用节点配置（并行执行 - 使用 Python 脚本）
 apply_node_configs(){
     # 应用验证者节点配置（后台并行）
     for name in $(echo "${!VALIDATORS[@]}" | tr ' ' '\n' | sort); do
-        ANSIBLE_CONFIG=$ANSIBLE_DIR/ansible.cfg ansible-playbook \
-            $ANSIBLE_DIR/playbooks/apply-node-config.yml \
-            -e "node_dir=$BASE_DIR/$name" \
-            -e "node_name=$name" \
-            -e "node_type=validator" \
-            --connection local > /dev/null 2>&1 &
+        python3 $SCRIPT_DIR/scripts/apply_node_config_fast.py \
+            $SCRIPT_DIR/node_config.yml \
+            $BASE_DIR/$name \
+            $name \
+            validator > /dev/null 2>&1 &
     done
     
     # 应用 Sentry 节点配置（后台并行）
     for name in $(echo "${!SENTRY_NODES[@]}" | tr ' ' '\n' | sort); do
-        ANSIBLE_CONFIG=$ANSIBLE_DIR/ansible.cfg ansible-playbook \
-            $ANSIBLE_DIR/playbooks/apply-node-config.yml \
-            -e "node_dir=$BASE_DIR/$name" \
-            -e "node_name=$name" \
-            -e "node_type=sentry" \
-            --connection local > /dev/null 2>&1 &
+        python3 $SCRIPT_DIR/scripts/apply_node_config_fast.py \
+            $SCRIPT_DIR/node_config.yml \
+            $BASE_DIR/$name \
+            $name \
+            sentry > /dev/null 2>&1 &
     done
     
     # 等待所有配置任务完成
