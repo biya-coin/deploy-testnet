@@ -5,3 +5,4 @@
 build/
 chain-deploy-config/
 **/.env
+test/peggo/test-token-info.txt
