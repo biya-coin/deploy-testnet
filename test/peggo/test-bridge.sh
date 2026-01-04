@@ -9,12 +9,50 @@ ETH_CHAIN_ID="${ETH_CHAIN_ID:-11155111}"
 # 使用部署合约的私钥（inventory.yml 中的 peggy_deployer_from_pk）
 ETH_PRIVATE_KEY="${ETH_PRIVATE_KEY:-0x99f65f092924fd9c7cb8125255da54ca63733be861d5cdfdb570e41182100ba1}"
 
-# Peggy 桥相关（自动从 peggy-contract-info.txt 读取最新合约地址）
-PEGGY_CONTRACT_INFO_FILE="../../ansible/peggy-contract-info.txt"
-BRIDGE_CONTRACT_ADDRESS="0x107738aB950D6A55297B6f38A9A5bE6e631cB717"
+# Peggy：自动从 peggy-contract-info.txt 读取最新合约地址
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PEGGY_CONTRACT_INFO_FILE="${SCRIPT_DIR}/../../build/peggy-contract-info.txt"
+# 从文件读取合约地址，如果文件不存在或读取失败则退出
+read_peggy_contract_address() {
+  local info_file="$1"
+  if [ ! -f "$info_file" ]; then
+    echo "错误: Peggy 合约信息文件不存在: $info_file" >&2
+    return 1
+  fi
+  
+  local addr=$(grep "^peggy_contract_address=" "$info_file" | cut -d'=' -f2 | tr -d '[:space:]')
+  if [ -z "$addr" ] || [[ ! "$addr" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+    echo "错误: 无法从 $info_file 读取有效的 peggy_contract_address" >&2
+    return 1
+  fi
+  
+  echo "$addr"
+  return 0
+}
 
-# TODO: 需要部署一个 ERC20 测试代币，或使用已有的测试代币
-TOKEN_ADDRESS="${TOKEN_ADDRESS:-0x46bcDa267c0023a9dcF6Df499edB6f07A609EE2a}"  # TestToken 合约地址
+BRIDGE_CONTRACT_ADDRESS=$(read_peggy_contract_address "$PEGGY_CONTRACT_INFO_FILE") || exit 1
+
+# 测试代币：自动从 test-token-info.txt 读取代币地址
+TEST_TOKEN_INFO_FILE="${SCRIPT_DIR}/test-token-info.txt"
+# 从文件读取代币地址，如果文件不存在或读取失败则退出
+read_token_address() {
+  local info_file="$1"
+  if [ ! -f "$info_file" ]; then
+    echo "错误: 测试代币信息文件不存在: $info_file" >&2
+    return 1
+  fi
+  
+  local addr=$(grep "^token_address=" "$info_file" | cut -d'=' -f2 | tr -d '[:space:]')
+  if [ -z "$addr" ] || [[ ! "$addr" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+    echo "错误: 无法从 $info_file 读取有效的 token_address" >&2
+    return 1
+  fi
+  
+  echo "$addr"
+  return 0
+}
+
+TOKEN_ADDRESS=$(read_token_address "$TEST_TOKEN_INFO_FILE") || exit 1
 TOKEN_DECIMALS="${TOKEN_DECIMALS:-6}"
 
 # Injective 相关（连接到部署的节点）
