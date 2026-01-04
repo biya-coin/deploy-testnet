@@ -48,9 +48,6 @@ if [ ! -f "$FIRST_ORCH_KEY" ]; then
     exit 1
 fi
 
-# 合约部署信息文件路径（用于后续读取）
-CONTRACT_INFO_FILE="$ANSIBLE_DIR/build/peggy-contract-info.txt"
-
 # 统计 orchestrator 密钥文件数量（用于显示）
 ORCH_KEY_COUNT=$(ls -1 "$CONFIG_DIR_ABS"/validator-*/peggo_evm_key.json 2>/dev/null | wc -l)
 
@@ -88,9 +85,6 @@ echo "合约部署流程完成！"
 echo "=========================================="
 
 # 读取并显示合约部署信息
-if [ -f "$CONTRACT_INFO_FILE" ]; then
-    echo "合约信息文件: $CONTRACT_INFO_FILE"
-    cat "$CONTRACT_INFO_FILE"
-else
-    echo "合约信息文件不存在: $CONTRACT_INFO_FILE"
-fi
+CONTRACT_INFO_FILE="$SCRIPT_DIR/build/peggy-contract-info.txt"
+echo "合约信息文件: $CONTRACT_INFO_FILE"
+cat "$CONTRACT_INFO_FILE"

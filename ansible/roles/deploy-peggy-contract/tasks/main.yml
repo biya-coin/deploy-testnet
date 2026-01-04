@@ -869,7 +869,7 @@
           peggy_contract_address={{ final_peggy_addr }}
           peggy_deploy_height={{ final_peggy_height }}
           peggy_validator_evm_addr={{ genesis_evm_addr }}
-        dest: "{{ playbook_dir }}/../build/peggy-contract-info.txt"
+        dest: "{{ playbook_dir }}/../../build/peggy-contract-info.txt"
         mode: '0644'
       delegate_to: localhost
       run_once: true
@@ -878,7 +878,6 @@
       debug:
         msg: |
           genesis.json 已更新，包含 Peggy 合约地址: {{ final_peggy_addr }}
-          合约信息已保存到: {{ playbook_dir }}/../build/peggy-contract-info.txt
 
   when: final_peggy_addr is defined and final_peggy_addr != '' and final_peggy_addr != 'null'
 
